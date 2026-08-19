@@ -1,6 +1,15 @@
 spring:
   application:
     name: servicehub-backend
+  # The default profile intentionally has no external database dependency. It keeps the
+  # development-only in-memory ticket repository usable until the mysql profile is explicitly set.
+  datasource:
+    url: jdbc:h2:mem:servicehub;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
   jackson:
     deserialization:
       # Fail closed on fields outside a published request DTO. This prevents silently accepting

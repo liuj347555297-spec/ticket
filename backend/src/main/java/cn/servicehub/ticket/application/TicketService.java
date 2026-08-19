@@ -21,7 +21,6 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
@@ -32,7 +31,6 @@ public class TicketService {
     private final ObjectAuthorizationService authorizationService;
     private final IdentitySnapshotResolver identitySnapshotResolver;
     private final AuditEventPublisher auditEventPublisher;
-    private final AtomicLong sequence = new AtomicLong();
     private final Clock clock = Clock.systemUTC();
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
@@ -55,10 +53,13 @@ public class TicketService {
                 command.title(), command.description(), command.structuredFields(), command.tags(), command.relatedConfigurationItemIds(),
                 identitySnapshotResolver.snapshotFor(user), new ServiceCatalogSummary(command.serviceCatalogItemId(),
                 "服务目录项 " + command.serviceCatalogItemId()), now, now, 0);
-            auditEventPublisher.publish(new AuditEvent(now, requestId(), user.iamUserId(), "TICKET_CREATED", "ticket", ticket.id(),
-                Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id())));
             return ticket;
         });
+        if (!result.replayed()) {
+            Ticket ticket = result.ticket();
+            auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_CREATED", "ticket", ticket.id(),
+                Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id())));
+        }
         return result;
     }
 
@@ -97,8 +98,12 @@ public class TicketService {
     }
 
     private String nextTicketId(java.time.Instant now) {
-        long number = sequence.incrementAndGet() % 1_000_000;
-        return "TKT-" + LocalDate.ofInstant(now, ZoneOffset.UTC).toString().replace("-", "") + "-" + String.format("%06d", number);
+        LocalDate businessDate = LocalDate.ofInstant(now, ZoneOffset.UTC);
+        long number = ticketRepository.nextTicketSequence(businessDate);
+        if (number > 999_999) {
+            throw new IllegalStateException("Daily ticket sequence is exhausted");
+        }
+        return "TKT-" + businessDate.toString().replace("-", "") + "-" + String.format("%06d", number);
     }
 
     private String requestId() {

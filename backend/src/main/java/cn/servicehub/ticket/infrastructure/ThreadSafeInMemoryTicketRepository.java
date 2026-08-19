@@ -9,15 +9,19 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Repository;
+import org.springframework.context.annotation.Profile;
 
 /** Development-only transactional substitute. Replace with a unique database constraint before production. */
 @Repository
+@Profile("!mysql")
 public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
     private final ConcurrentHashMap<String, Ticket> ticketsById = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<IdempotencyRecordKey, IdempotencyRecord> idempotencyRecords = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<java.time.LocalDate, AtomicLong> ticketSequences = new ConcurrentHashMap<>();
 
     @Override
     public CreateTicketResult createIdempotently(String actorIamUserId, String idempotencyKey, String requestFingerprint,
@@ -52,6 +56,11 @@ public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
             .filter(ticket -> ticket.matchesKeyword(query.keyword()))
             .sorted(Comparator.comparing(Ticket::createdAt).reversed().thenComparing(Ticket::id))
             .toList();
+    }
+
+    @Override
+    public long nextTicketSequence(java.time.LocalDate businessDate) {
+        return ticketSequences.computeIfAbsent(businessDate, ignored -> new AtomicLong()).incrementAndGet();
     }
 
     private record IdempotencyRecordKey(String actorIamUserId, String idempotencyKey) {
