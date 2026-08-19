@@ -1,0 +1,18 @@
+# Local browser automation state and temporary render artifacts
+.playwright-cli/
+tmp/
+
+# Derived previews and test screenshots
+output/
+
+# Build outputs
+**/node_modules/
+**/dist/
+**/target/
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
