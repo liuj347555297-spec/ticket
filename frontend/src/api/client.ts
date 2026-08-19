@@ -1,0 +1,50 @@
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+type RequestOptions = Omit<RequestInit, 'body' | 'headers'> & {
+  body?: unknown
+  headers?: Record<string, string>
+}
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+
+function getCsrfToken(): string | undefined {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? undefined
+}
+
+/**
+ * API boundary for the Spring Boot backend. It deliberately never reads or stores access tokens.
+ * Once IAM SSO is enabled, the backend session cookie is sent only on same-origin requests.
+ */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  if (!path.startsWith('/')) throw new Error('API path must start with /')
+
+  const csrfToken = getCsrfToken()
+  const headers = new Headers({ Accept: 'application/json', ...options.headers })
+  if (options.body !== undefined) headers.set('Content-Type', 'application/json')
+  if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(options.method?.toUpperCase() ?? 'GET')) {
+    headers.set('X-CSRF-TOKEN', csrfToken)
+  }
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    credentials: 'same-origin',
+  })
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => undefined) as { message?: string; code?: string } | undefined
+    throw new ApiError(payload?.message ?? `请求失败（${response.status}）`, response.status, payload?.code)
+  }
+  if (response.status === 204) return undefined as T
+  return response.json() as Promise<T>
+}

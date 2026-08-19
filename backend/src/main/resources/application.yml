@@ -1,0 +1,24 @@
+spring:
+  application:
+    name: servicehub-backend
+  mvc:
+    problemdetails:
+      enabled: false
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+servicehub:
+  security:
+    # Must be replaced by the internal portal origin for each deployment environment.
+    allowed-origins:
+      - http://localhost:5173
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never

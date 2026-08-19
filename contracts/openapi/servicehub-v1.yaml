@@ -1,0 +1,538 @@
+openapi: 3.1.0
+info:
+  title: ServiceHub 工单平台 API
+  version: 1.0.0-draft.1
+  description: |
+    Vue 3 门户与 Spring Boot 单体服务的共享 v1 契约。所有业务 API 都由服务端执行对象级、流程动作和数据范围鉴权；UI 隐藏不是授权控制。
+servers:
+  - url: /api/v1
+    description: 同源网关路径
+tags:
+  - name: System
+  - name: Identity
+  - name: Security
+  - name: Tickets
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: 存活与就绪探针
+      description: 仅用于网关/负载均衡探测，不返回版本、依赖地址、堆栈或敏感配置。
+      security: []
+      responses:
+        '200':
+          description: 服务可接收流量
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /me:
+    get:
+      tags: [Identity]
+      summary: 获取当前 IAM 用户及平台投影
+      description: 返回只读 IAM 投影；不返回密码、IAM 令牌、完整联系方式或组织管理能力。
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /security/csrf:
+    get:
+      tags: [Security]
+      summary: 获取当前会话的 CSRF 令牌
+      operationId: getCsrfToken
+      responses:
+        '200':
+          description: 仅对当前会话有效的 CSRF 令牌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrfTokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /security/session:
+    delete:
+      tags: [Security]
+      summary: 注销当前会话
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: 会话已失效；重复调用同样视为成功。
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /tickets:
+    get:
+      tags: [Tickets]
+      summary: 在当前数据范围内查询工单
+      description: 服务端忽略或拒绝越出当前授权范围的组织、队列、人员等筛选条件；不会依赖前端过滤。
+      operationId: listTickets
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketStatus'
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketType'
+        - name: q
+          in: query
+          description: 关键词；服务端执行长度限制、转义和权限过滤。
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: 已按数据范围过滤的分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+    post:
+      tags: [Tickets]
+      summary: 创建工单
+      description: 以当前认证身份作为提单人。requesterId、组织、优先级、队列、状态和处理人均不得由客户端指定。
+      operationId: createTicket
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketCreateRequest'
+      responses:
+        '201':
+          description: 工单已创建
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+              description: 新工单相对地址
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /tickets/{ticketId}:
+    get:
+      tags: [Tickets]
+      summary: 获取单张工单
+      description: 详情、评论、附件及关联信息需逐对象重新授权；无权访问时不得借由错误消息泄露对象存在性。
+      operationId: getTicket
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 已授权的工单详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: SERVICEHUB_SESSION
+      description: 由 Spring Boot 维护的 HttpOnly、Secure、SameSite 会话 Cookie；浏览器不得将访问令牌写入 localStorage。
+  parameters:
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: 对所有非安全方法必传；令牌绑定当前会话。
+      schema:
+        type: string
+        minLength: 20
+        maxLength: 512
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 客户端为一次创建意图生成的 UUID；相同主体和键在保留期内只能产生一个结果。
+      schema:
+        type: string
+        format: uuid
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    ValidationFailed:
+      description: 请求字段或服务目录规则校验失败
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Unauthenticated:
+      description: 会话不存在、过期或 IAM 身份不可用
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Forbidden:
+      description: 已认证但不具备当前对象、动作或数据范围权限
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: 对象不存在或按防枚举策略不可见
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Conflict:
+      description: 幂等键冲突、状态冲突或乐观锁冲突
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    RateLimited:
+      description: 请求频率超过当前主体或来源限制
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    ServiceUnavailable:
+      description: 服务暂不可接收流量
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, timestamp, requestId]
+      properties:
+        status:
+          type: string
+          enum: [UP]
+        timestamp:
+          type: string
+          format: date-time
+        requestId:
+          type: string
+          maxLength: 64
+    CurrentUserResponse:
+      type: object
+      additionalProperties: false
+      required: [user, authorization]
+      properties:
+        user:
+          $ref: '#/components/schemas/UserProjection'
+        authorization:
+          type: object
+          additionalProperties: false
+          required: [roles, dataScopes]
+          properties:
+            roles:
+              type: array
+              items:
+                $ref: '#/components/schemas/PlatformRole'
+            dataScopes:
+              type: array
+              description: 用于 UI 提示，后端仍必须在每次请求实时计算并校验。
+              items:
+                $ref: '#/components/schemas/DataScopeSummary'
+    UserProjection:
+      type: object
+      additionalProperties: false
+      required: [iamUserId, displayName, status, organization]
+      properties:
+        iamUserId:
+          type: string
+          maxLength: 128
+          description: IAM 不可变用户标识
+        displayName:
+          type: string
+          maxLength: 100
+        loginName:
+          type: string
+          maxLength: 128
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        organization:
+          $ref: '#/components/schemas/OrganizationSummary'
+    OrganizationSummary:
+      type: object
+      additionalProperties: false
+      required: [iamOrganizationId, name]
+      properties:
+        iamOrganizationId:
+          type: string
+          maxLength: 128
+        name:
+          type: string
+          maxLength: 200
+    DataScopeSummary:
+      type: object
+      additionalProperties: false
+      required: [scopeType, scopeId]
+      properties:
+        scopeType:
+          type: string
+          enum: [ORGANIZATION, SERVICE, QUEUE, CONFIGURATION_ITEM]
+        scopeId:
+          type: string
+          maxLength: 128
+    PlatformRole:
+      type: string
+      enum: [REQUESTER, FIRST_LINE_SUPPORT, SECOND_LINE_SUPPORT, APPROVER, SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+    CsrfTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+          minLength: 20
+          maxLength: 512
+    TicketType:
+      type: string
+      enum: [INCIDENT, SERVICE_REQUEST, ACCESS_REQUEST, PROBLEM, CHANGE]
+    TicketStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, PENDING_CLASSIFICATION, PENDING_ASSIGNMENT, PENDING_ACCEPTANCE, IN_PROGRESS, RESOLVED, PENDING_USER_FEEDBACK, CLOSED, CANCELLED, ON_HOLD]
+    TicketPriority:
+      type: string
+      enum: [P1, P2, P3, P4]
+    Tag:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+          pattern: '^#[^\\s#]{1,50}$'
+          description: 自由标签必须以 # 开头；标准标签同样按此格式展示。
+        kind:
+          type: string
+          enum: [STANDARD, FREE]
+    TicketCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [serviceCatalogItemId, type, title, description, structuredFields]
+      properties:
+        serviceCatalogItemId:
+          type: string
+          maxLength: 64
+          description: 服务目录项 ID；后端以此加载必填项、路由、审批与 SLA 规则。
+        type:
+          $ref: '#/components/schemas/TicketType'
+        title:
+          type: string
+          minLength: 4
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+          description: 自然语言补充；服务端清洗、脱敏和长度校验。
+        structuredFields:
+          type: object
+          description: 仅接受服务目录已发布表单定义中的字段；字段类型、必填性和联动规则由服务端验证。
+          additionalProperties: true
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Tag'
+        relatedConfigurationItemIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 128
+    Ticket:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, priority, title, requester, serviceCatalogItem, createdAt, version]
+      properties:
+        id:
+          type: string
+          pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+        type:
+          $ref: '#/components/schemas/TicketType'
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        priority:
+          $ref: '#/components/schemas/TicketPriority'
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+        requester:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        assignee:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        serviceCatalogItem:
+          $ref: '#/components/schemas/ServiceCatalogSummary'
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 0
+          description: 乐观锁版本；写操作须在后续动作契约中携带并校验。
+    IdentitySnapshot:
+      type: object
+      additionalProperties: false
+      required: [iamUserId, displayName, organizationName, capturedAt]
+      properties:
+        iamUserId:
+          type: string
+          maxLength: 128
+        displayName:
+          type: string
+          maxLength: 100
+        organizationName:
+          type: string
+          maxLength: 200
+        positionName:
+          type: string
+          maxLength: 200
+        capturedAt:
+          type: string
+          format: date-time
+    ServiceCatalogSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 200
+    TicketPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, code, requestId]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: 稳定问题类型，例如 /problems/validation-failed。
+        title:
+          type: string
+          maxLength: 160
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+        detail:
+          type: string
+          maxLength: 500
+          description: 面向用户的安全摘要；禁止包含 SQL、堆栈、令牌、权限规则或对象敏感信息。
+        requestId:
+          type: string
+          maxLength: 64
+        fieldErrors:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [field, code]
+            properties:
+              field:
+                type: string
+                maxLength: 200
+              code:
+                type: string
+                maxLength: 80
+              message:
+                type: string
+                maxLength: 300
+security:
+  - sessionCookie: []
