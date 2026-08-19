@@ -14,10 +14,18 @@ type RequestOptions = Omit<RequestInit, 'body' | 'headers'> & {
   headers?: Record<string, string>
 }
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 
 function getCsrfToken(): string | undefined {
-  return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ?? undefined
+  const metaToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content')
+  if (metaToken) return metaToken
+
+  // The token is intentionally read from the CSRF cookie only. Authentication remains
+  // in the HttpOnly server session cookie and is never exposed to this application.
+  return document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith('XSRF-TOKEN='))
+    ?.split('=')[1]
 }
 
 /**
@@ -31,7 +39,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const headers = new Headers({ Accept: 'application/json', ...options.headers })
   if (options.body !== undefined) headers.set('Content-Type', 'application/json')
   if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(options.method?.toUpperCase() ?? 'GET')) {
-    headers.set('X-CSRF-TOKEN', csrfToken)
+    headers.set('X-CSRF-TOKEN', decodeURIComponent(csrfToken))
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {

@@ -1,6 +1,11 @@
 spring:
   application:
     name: servicehub-backend
+  jackson:
+    deserialization:
+      # Fail closed on fields outside a published request DTO. This prevents silently accepting
+      # browser-supplied requester, priority, status, queue or assignee fields.
+      fail-on-unknown-properties: true
   mvc:
     problemdetails:
       enabled: false

@@ -4,6 +4,7 @@ info:
   version: 1.0.0-draft.1
   description: |
     Vue 3 门户与 Spring Boot 单体服务的共享 v1 契约。所有业务 API 都由服务端执行对象级、流程动作和数据范围鉴权；UI 隐藏不是授权控制。
+    附件与消息通道的上传/下载、投递回执接口保留为后续独立契约：当前版本不得以未受控的通用文件或回调接口替代。
 servers:
   - url: /api/v1
     description: 同源网关路径
@@ -12,6 +13,9 @@ tags:
   - name: Identity
   - name: Security
   - name: Tickets
+  - name: Workflow
+  - name: Collaboration
+  - name: Comments
 paths:
   /health:
     get:
@@ -162,6 +166,170 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /tickets/{ticketId}/actions:
+    post:
+      tags: [Workflow]
+      summary: 执行工单生命周期动作
+      description: |
+        覆盖提交、分类、分派、受理、开始处理、待用户反馈、解决、关闭、重开、撤销、挂起、恢复和升级。
+        客户端仅表达动作意图及结构化业务事实；服务端逐对象校验身份、数据范围、当前状态、流程节点、候选人、审批策略和 SLA 影响，
+        并决定是否创建审批任务或拒绝动作。客户端不得指定目标状态、流程变量、审批结论、优先级、队列或处理人。
+      operationId: executeTicketAction
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketActionRequest'
+      responses:
+        '200':
+          description: 动作已立即完成，或已按规则创建后续审批/流程任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketActionResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/work-actions:
+    post:
+      tags: [Collaboration]
+      summary: 执行转办、协办、抢单、主办指定或交接班
+      description: |
+        覆盖转办、添加/移除协办、抢单、指定主办与交接班。targetIamUserId 仅是候选目标，
+        服务端必须验证该人员 IAM 投影有效、班次/技能/队列/组织数据范围、当前任务候选资格和审批要求；
+        不能通过请求体变更提交人、角色、队列、流程受让人或历史身份快照。
+      operationId: executeTicketWorkAction
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketWorkActionRequest'
+      responses:
+        '200':
+          description: 协同关系或任务受让人已更新，或已创建审批任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketWorkActionResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/internal-comments:
+    get:
+      tags: [Comments]
+      summary: 查询已授权的内部评论
+      description: 服务端按工单对象权限、当前协作关系和评论可见范围过滤；提单人及无内部协作权限人员不能据此枚举评论或人员信息。
+      operationId: listTicketInternalComments
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 当前主体可见的内部评论
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketCommentPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Comments]
+      summary: 添加内部评论
+      description: |
+        仅对有当前工单处理关系且具备内部协作权限的人员开放。评论内容服务端净化、脱敏和审计；
+        internal 标记由接口固定，不接受客户端将评论公开给提单人或变更工单状态。
+      operationId: createTicketInternalComment
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketInternalCommentRequest'
+      responses:
+        '201':
+          description: 内部评论已保存并写入审计链
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketComment'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/controlled-jump-requests:
+    post:
+      tags: [Workflow]
+      summary: 发起受控流程跳转申请
+      description: |
+        仅为纠偏、应急或迁移提出申请，绝不直接跳转。服务端验证来源任务、流程定义版本、节点白名单、硬审批/授权节点、
+        数据范围、任务处置、审批策略与 SLA 影响；通过后才创建审批和受控执行任务。任何跳转均写入不可篡改审计链。
+      operationId: requestControlledTicketJump
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlledJumpRequest'
+      responses:
+        '202':
+          description: 跳转申请已受理；不表示跳转已执行
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlledJumpRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 components:
   securitySchemes:
     sessionCookie:
@@ -353,6 +521,14 @@ components:
     TicketStatus:
       type: string
       enum: [DRAFT, SUBMITTED, PENDING_CLASSIFICATION, PENDING_ASSIGNMENT, PENDING_ACCEPTANCE, IN_PROGRESS, RESOLVED, PENDING_USER_FEEDBACK, CLOSED, CANCELLED, ON_HOLD]
+    TicketAction:
+      type: string
+      description: 生命周期动作；动作后的状态、优先级、队列、审批和 SLA 均由服务端规则计算。
+      enum: [SUBMIT, CLASSIFY, ASSIGN, ACCEPT, START_PROCESSING, REQUEST_USER_FEEDBACK, RESOLVE, CLOSE, REOPEN, CANCEL, HOLD, RESUME, ESCALATE]
+    TicketWorkAction:
+      type: string
+      description: 多人处理动作；目标人员仅是候选输入，不构成授权或直接受让。
+      enum: [TRANSFER, ADD_COLLABORATOR, REMOVE_COLLABORATOR, CLAIM, APPOINT_PRIMARY, HANDOVER_SHIFT]
     TicketPriority:
       type: string
       enum: [P1, P2, P3, P4]
@@ -402,6 +578,259 @@ components:
           items:
             type: string
             maxLength: 128
+    TicketActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, version, reason, structuredFields]
+      x-server-enforced:
+        - object-authorization
+        - process-node-and-candidate-check
+        - approval-policy
+        - workflow-transition
+        - sla-impact-calculation
+        - immutable-audit-event
+      properties:
+        action:
+          $ref: '#/components/schemas/TicketAction'
+        version:
+          type: integer
+          minimum: 0
+          description: 客户端读取到的工单乐观锁版本；不一致时返回 VERSION_CONFLICT，服务端绝不覆盖。
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: 必填的操作理由；服务端清洗、脱敏并写入审计摘要。
+        structuredFields:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: |
+            仅允许当前服务目录、动作与流程节点已发布定义中的结构化字段，例如分类依据、解决码、挂起原因、升级级别或用户反馈期限。
+            禁止传入状态、流程变量、审批人结论、SLA 截止时间、优先级、队列、提交人和处理人；服务端采用字段白名单校验。
+    WorkflowDecision:
+      type: object
+      additionalProperties: false
+      required: [outcome, workflowInstanceId, currentNodeCode, auditEventId]
+      properties:
+        outcome:
+          type: string
+          enum: [COMPLETED, PENDING_APPROVAL, PENDING_PROCESS_TASK]
+          description: 由服务端决策；PENDING_APPROVAL 不表示审批已通过。
+        workflowInstanceId:
+          type: string
+          maxLength: 128
+        currentNodeCode:
+          type: string
+          maxLength: 128
+        approvalTaskId:
+          type: string
+          maxLength: 128
+          description: 仅在服务端创建审批任务时返回；ID 不能替代对象级授权。
+        auditEventId:
+          type: string
+          maxLength: 128
+    SlaImpact:
+      type: object
+      additionalProperties: false
+      required: [calculatedByServer, impact]
+      properties:
+        calculatedByServer:
+          type: boolean
+          const: true
+        impact:
+          type: string
+          enum: [NONE, PAUSED, RESUMED, RECALCULATED, BREACH_RISK]
+        targetAt:
+          type: string
+          format: date-time
+          description: 服务端计算后的目标时间；仅在当前主体有查看该 SLA 信息的权限时返回。
+    TicketActionResult:
+      type: object
+      additionalProperties: false
+      required: [ticket, decision, slaImpact]
+      properties:
+        ticket:
+          $ref: '#/components/schemas/Ticket'
+        decision:
+          $ref: '#/components/schemas/WorkflowDecision'
+        slaImpact:
+          $ref: '#/components/schemas/SlaImpact'
+    TicketWorkActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, version, reason, structuredFields]
+      x-server-enforced:
+        - object-authorization
+        - target-identity-projection-and-skill-check
+        - current-task-candidate-check
+        - approval-policy
+        - workflow-assignment
+        - immutable-audit-event
+      properties:
+        action:
+          $ref: '#/components/schemas/TicketWorkAction'
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        targetIamUserId:
+          type: string
+          maxLength: 128
+          description: 转办、增加/移除协办、指定主办或交接班的候选目标；抢单时忽略，服务端以当前主体为候选人。
+        structuredFields:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: 仅允许动作定义的班次、技能、交接清单、协办职责等字段；不得传入流程受让人、角色或组织范围。
+    TicketParticipant:
+      type: object
+      additionalProperties: false
+      required: [role, identity, assignedAt]
+      properties:
+        role:
+          type: string
+          enum: [PRIMARY, COLLABORATOR]
+        identity:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        assignedAt:
+          type: string
+          format: date-time
+    TicketWorkActionResult:
+      type: object
+      additionalProperties: false
+      required: [ticket, decision, participants]
+      properties:
+        ticket:
+          $ref: '#/components/schemas/Ticket'
+        decision:
+          $ref: '#/components/schemas/WorkflowDecision'
+        participants:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/TicketParticipant'
+    TicketInternalCommentRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason, content]
+      x-server-enforced:
+        - object-authorization
+        - internal-collaboration-permission
+        - content-sanitization-and-desensitization
+        - immutable-audit-event
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: 评论目的或处理上下文；不得包含密码、令牌或附件正文。
+        content:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: 纯文本或受限富文本；服务端净化后存储和输出。
+        structuredFields:
+          type: object
+          additionalProperties: true
+          description: 已发布评论模板允许的字段；服务端按模板白名单校验。
+    TicketComment:
+      type: object
+      additionalProperties: false
+      required: [id, visibility, author, content, createdAt, auditEventId]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        visibility:
+          type: string
+          const: INTERNAL
+        author:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        content:
+          type: string
+          maxLength: 4000
+        createdAt:
+          type: string
+          format: date-time
+        auditEventId:
+          type: string
+          maxLength: 128
+    TicketCommentPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TicketComment'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    ControlledJumpRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason, sourceTaskId, targetNodeCode, taskDisposition, structuredFields]
+      x-server-enforced:
+        - object-authorization
+        - source-task-and-process-version-check
+        - controlled-jump-node-whitelist
+        - hard-approval-and-authorization-node-protection
+        - dual-approval-policy
+        - task-disposition-validation
+        - sla-impact-calculation
+        - immutable-audit-event
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 10
+          maxLength: 2000
+          description: 纠偏、应急或迁移的具体原因；不得以“方便处理”等笼统理由绕过正式流程。
+        sourceTaskId:
+          type: string
+          maxLength: 128
+          description: 当前流程任务的候选引用；服务端验证其属于此工单、当前流程实例且当前主体具备操作关系。
+        targetNodeCode:
+          type: string
+          maxLength: 128
+          description: 已发布流程定义中允许受控跳转的目标节点编码；服务端拒绝硬审批或授权节点绕过。
+        taskDisposition:
+          type: string
+          enum: [CANCEL_CURRENT_TASKS, PRESERVE_AS_READ_ONLY]
+          description: 当前任务处置意图；服务端按节点策略最终决定。
+        structuredFields:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: 已发布跳转申请表单定义中的影响范围、回退方案、关联变更单等字段；客户端不能提供审批结论或 SLA 时间。
+    ControlledJumpRequestResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, decision, slaImpact]
+      properties:
+        requestId:
+          type: string
+          maxLength: 128
+        decision:
+          $ref: '#/components/schemas/WorkflowDecision'
+        slaImpact:
+          $ref: '#/components/schemas/SlaImpact'
     Ticket:
       type: object
       additionalProperties: false
@@ -509,7 +938,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500
