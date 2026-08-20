@@ -4,6 +4,7 @@ import { identityApi, type CurrentUserResponse, type CurrentUserSource } from '@
 export interface SessionProjection {
   iamUserId: string
   displayName: string
+  organizationIamOrganizationId: string
   organizationName: string
 }
 
@@ -29,6 +30,7 @@ export const useSessionStore = defineStore('session', {
           ? {
               iamUserId: result.data.user.iamUserId,
               displayName: result.data.user.displayName,
+              organizationIamOrganizationId: result.data.user.organization.iamOrganizationId,
               organizationName: result.data.user.organization.name,
             }
           : null

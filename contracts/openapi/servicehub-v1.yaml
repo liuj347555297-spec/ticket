@@ -4,7 +4,7 @@ info:
   version: 1.0.0-draft.1
   description: |
     Vue 3 门户与 Spring Boot 单体服务的共享 v1 契约。所有业务 API 都由服务端执行对象级、流程动作和数据范围鉴权；UI 隐藏不是授权控制。
-    附件与消息通道的上传/下载、投递回执接口保留为后续独立契约：当前版本不得以未受控的通用文件或回调接口替代。
+    附件上传/下载接口保留为后续独立契约。消息仅通过受控站内信和受管通道适配器投递；不得以通用回调、任意 URL 或客户端指定收件人替代。
 servers:
   - url: /api/v1
     description: 同源网关路径
@@ -20,6 +20,9 @@ tags:
   - name: ServiceCatalog
   - name: ServiceCatalogAdmin
   - name: RuleMatching
+  - name: Notifications
+  - name: NotificationAdmin
+  - name: NotificationRoutingAdmin
 paths:
   /health:
     get:
@@ -949,6 +952,430 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: 查询当前主体的站内消息
+      description: |
+        仅返回以当前认证 IAM 主体为收件人的消息，并按服务端计算的消息可见性、保留期和数据范围再次过滤；
+        请求不接受收件人、组织、工单、流程或通道的任意指定条件，不能通过分页或关键词枚举他人消息。
+        工单、流程和消息事件中的历史身份快照只用于追溯，当前读取授权仍由服务端基于有效 IAM 投影重新判定。
+      operationId: listMyNotifications
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: readState
+          in: query
+          description: 仅筛选当前主体自己的已读状态。
+          schema:
+            $ref: '#/components/schemas/NotificationReadState'
+        - name: category
+          in: query
+          description: 仅允许筛选当前主体可见的消息类别。
+          schema:
+            $ref: '#/components/schemas/NotificationCategory'
+      responses:
+        '200':
+          description: 当前主体可见的站内消息分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /notifications/{notificationId}/read:
+    patch:
+      tags: [Notifications]
+      summary: 标记当前主体的一条站内消息为已读
+      description: |
+        仅可标记当前认证主体本人收件箱中的消息；路径 ID 不构成授权，服务端必须在更新前验证收件人 IAM ID、消息可见性和保留状态。
+        已读操作以主体、消息、请求指纹和幂等键绑定；重试返回首次结果，不能改变他人的已读状态或消息内容。
+      operationId: markMyNotificationRead
+      x-replay-protection: subject-operation-notification-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationMarkReadRequest'
+      responses:
+        '200':
+          description: 已读状态已由服务端更新并审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /notifications/unread-count:
+    get:
+      tags: [Notifications]
+      summary: 获取当前主体的未读站内消息数
+      description: |
+        仅按当前认证 IAM 主体、当前消息可见性和保留策略计算未读数；不接受用户、组织、工单、通道或消息 ID 参数，
+        不能用于探测他人消息。结果仅为门户角标提示，不授予读取、标记已读或访问来源工单的权限。
+      operationId: getMyUnreadNotificationCount
+      responses:
+        '200':
+          description: 当前主体可见消息的未读计数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreadNotificationCountResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /notifications/{notificationId}/deliveries:
+    get:
+      tags: [Notifications]
+      summary: 查询当前主体消息的投递状态
+      description: |
+        仅返回当前认证主体作为收件人的脱敏投递摘要。外部通道的原始请求、回执体、URL、令牌、电话号码、WPS/企业微信用户标识及供应商消息 ID 均不得返回。
+        outbox 记录、重试和最终失败由服务端异步处理；读取本接口不触发重投，不能根据消息 ID 查询他人或流程候选人的投递结果。
+      operationId: listMyNotificationDeliveries
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 当前主体自己的脱敏投递状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationDeliveryPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /notification-preferences:
+    get:
+      tags: [Notifications]
+      summary: 查询当前主体的消息通道偏好及强制策略
+      description: |
+        仅返回当前认证 IAM 主体本人的偏好和服务端计算的有效状态，不接受用户/组织筛选且不能枚举他人偏好或外部 IM 映射。
+        `MANDATORY_WORKFLOW_TASK` 等强制待办始终至少经 IN_APP 投递，用户偏好只能影响可选提醒；不能取消、抑制或绕过流程待办、审批和 SLA 强制通知。
+      operationId: listMyNotificationPreferences
+      responses:
+        '200':
+          description: 当前主体的偏好及不可退订强制规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferencePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /notification-preferences/{channelCode}/{category}:
+    put:
+      tags: [Notifications]
+      summary: 更新当前主体的可选消息偏好
+      description: |
+        仅允许当前主体调整自己的可选消息类别和已受管启用的通道偏好。路径通道/类别只是候选定位；服务端检查当前 IAM 映射、
+        通道政策与类别可退订性。强制待办的有效投递状态不可设为禁用，外部地址、收件人、端点和模板均不能通过该接口修改。
+      operationId: updateMyNotificationPreference
+      x-replay-protection: subject-operation-notification-preference-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/NotificationChannelCode'
+        - $ref: '#/components/parameters/NotificationCategory'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferenceUpdateRequest'
+      responses:
+        '200':
+          description: 偏好已更新；响应中的 effectiveEnabled 是服务端强制策略后的结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreference'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/notification-channels:
+    get:
+      tags: [NotificationAdmin]
+      summary: 查询消息通道受管配置状态
+      description: |
+        仅 `PLATFORM_ADMIN` 或审计职责可查看，且仅返回通道启用状态、适配器健康摘要、受管密钥引用是否可用和最后检查时间。
+        不返回密钥名称/值、令牌、证书、代理地址、回调 URL、供应商租户信息、原始错误或收件人映射。
+      operationId: listNotificationChannelConfigurationStatus
+      x-required-platform-roles: [PLATFORM_ADMIN, AUDITOR]
+      responses:
+        '200':
+          description: 已授权的消息通道受管配置状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationChannelConfigurationStatusPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/notification-channels/{channelCode}/test-deliveries:
+    post:
+      tags: [NotificationAdmin]
+      summary: 发起受控消息通道测试投递
+      description: |
+        仅 `PLATFORM_ADMIN` 可在受管通道上创建连通性测试。收件人只能由服务端确定为当前管理员本人或预登记的测试组；
+        请求不得传入 IAM 用户、组织、手机号、WPS/企业微信 ID、URL、模板正文、变量、令牌或密钥。测试使用服务端固定、纯文本、无业务数据的模板。
+        测试通过 outbox 异步投递，受限频率、幂等、审计和适配器允许列表控制；创建测试不代表外部通道已投递成功。
+      operationId: createControlledNotificationChannelTestDelivery
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-channel-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/NotificationChannelCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlledNotificationTestDeliveryRequest'
+      responses:
+        '202':
+          description: 受控测试已写入 outbox 并生成审计；实际投递状态应轮询受限结果摘要。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlledNotificationTestDeliveryResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /admin/notification-routing-rules:
+    get:
+      tags: [NotificationRoutingAdmin]
+      summary: 查询组织到消息通道的受控路由规则
+      description: |
+        仅 `PLATFORM_ADMIN` 或审计职责可按其配置数据范围读取规则摘要。规则只决定已由服务端授权的收件人应使用的通道，
+        不创建、扩大或暴露收件人范围；响应不返回外部地址、WPS/企业微信标识、表达式、密钥、端点或原始投递载荷。
+        草稿和待复核版本仅对拥有相应管理范围的管理员/审计员可见，读取仍须逐对象校验组织范围以防通过筛选参数枚举组织配置。
+      operationId: listNotificationRoutingRules
+      x-required-platform-roles: [PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: organizationIamOrganizationId
+          in: query
+          description: 仅作为服务端已授权管理范围内的组织筛选条件；无权组织按防枚举策略处理。
+          schema:
+            type: string
+            maxLength: 128
+        - name: lifecycleStatus
+          in: query
+          schema:
+            $ref: '#/components/schemas/NotificationRoutingRuleLifecycleStatus'
+      responses:
+        '200':
+          description: 已按管理范围过滤的路由规则分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingRulePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [NotificationRoutingAdmin]
+      summary: 创建消息路由规则草稿
+      description: |
+        仅 `PLATFORM_ADMIN` 可在自身管理组织范围创建草稿。请求只能定义组织匹配、是否含下级、事件、受控 channelCode、IN_APP fallback、优先级和启用状态；
+        不能提交收件人、外部地址、通道端点、WPS/企业微信 ID、模板正文、模板变量、表达式、密钥或直接发布状态。
+        服务端校验组织投影、优先级冲突、事件允许列表、通道可用性和职责分离，写入身份快照与不可篡改审计。
+      operationId: createNotificationRoutingRuleDraft
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-routing-rule-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRoutingRuleDraftUpsertRequest'
+      responses:
+        '201':
+          description: 路由规则草稿已创建，尚未生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingRule'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/notification-routing-rules/preview:
+    get:
+      tags: [NotificationRoutingAdmin]
+      summary: 预览组织事件的消息通道路由命中
+      description: |
+        仅 `PLATFORM_ADMIN` 或审计职责可在其管理数据范围内查看脱敏的规则命中结果。预览仅计算组织和事件到通道的路由，
+        不查询、生成或返回任何收件人、外部 IM 标识、密钥、端点、模板正文或实际投递；生产投递时仍重新计算且固化路由快照。
+      operationId: previewNotificationRouting
+      x-required-platform-roles: [PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - name: organizationIamOrganizationId
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+        - name: event
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/NotificationRoutingEvent'
+      responses:
+        '200':
+          description: 已授权范围内的脱敏路由预览
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingPreview'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/notification-routing-rules/{routingRuleId}:
+    get:
+      tags: [NotificationRoutingAdmin]
+      summary: 获取一条受控消息路由规则
+      description: 仅返回当前管理范围内的规则版本；规则 ID 不构成授权，审计员只读且不会因该接口获得组织/通道配置写权。
+      operationId: getNotificationRoutingRule
+      x-required-platform-roles: [PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/NotificationRoutingRuleId'
+      responses:
+        '200':
+          description: 已授权的路由规则
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingRule'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [NotificationRoutingAdmin]
+      summary: 更新消息路由规则草稿
+      description: 仅 `PLATFORM_ADMIN` 可修改当前管理范围内的草稿，且必须携带乐观锁版本；已发布版本不可原地修改，须复制为新草稿并再次复核发布。
+      operationId: updateNotificationRoutingRuleDraft
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-routing-rule-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/NotificationRoutingRuleId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRoutingRuleDraftUpsertRequest'
+      responses:
+        '200':
+          description: 路由规则草稿已更新并审计，尚未生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingRule'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/notification-routing-rules/{routingRuleId}/publish-requests:
+    post:
+      tags: [NotificationRoutingAdmin]
+      summary: 提交消息路由规则发布申请
+      description: |
+        发布申请不直接生效。服务端冻结草稿版本，复核组织范围、事件/优先级冲突、通道可用性和 IN_APP fallback，
+        创建双人复核/审批；申请人不得审批自己的规则。投递运行时仅使用最后有效的已发布规则。
+      operationId: requestNotificationRoutingRulePublication
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-routing-rule-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/NotificationRoutingRuleId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRoutingRulePublishRequest'
+      responses:
+        '202':
+          description: 发布复核/审批已创建；未获批前不会改变投递路由。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationRoutingRulePublishRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 components:
   securitySchemes:
     sessionCookie:
@@ -1014,6 +1441,36 @@ components:
       schema:
         type: string
         pattern: '^[A-Z][A-Z0-9_]{1,62}$'
+    NotificationId:
+      name: notificationId
+      in: path
+      required: true
+      description: 仅作消息定位；服务端必须以当前认证主体为收件人重新执行对象级授权，不能据此读取、标记或枚举其他人的消息。
+      schema:
+        type: string
+        pattern: '^NTF-[A-Za-z0-9_-]{8,64}$'
+    NotificationChannelCode:
+      name: channelCode
+      in: path
+      required: true
+      description: 仅接受受控适配器允许列表中的通道编码；服务端忽略任何客户端传入的端点、回调、租户或密钥参数。
+      schema:
+        $ref: '#/components/schemas/NotificationChannelCode'
+    NotificationRoutingRuleId:
+      name: routingRuleId
+      in: path
+      required: true
+      description: 路由规则定位符；服务端仍须基于当前管理员/审计员的组织配置范围逐对象授权。
+      schema:
+        type: string
+        pattern: '^NRO-[A-Za-z0-9_-]{8,64}$'
+    NotificationCategory:
+      name: category
+      in: path
+      required: true
+      description: 当前主体可配置的消息类别；是否允许退订由服务端策略决定，强制待办类别不可关闭。
+      schema:
+        $ref: '#/components/schemas/NotificationCategory'
     Page:
       name: page
       in: query
@@ -1379,6 +1836,739 @@ components:
           type: string
           minLength: 20
           maxLength: 512
+    NotificationReadState:
+      type: string
+      enum: [UNREAD, READ]
+    NotificationCategory:
+      type: string
+      enum: [TICKET, WORKFLOW, MANDATORY_WORKFLOW_TASK, SLA, SYSTEM, INTEGRATION]
+    NotificationChannelCode:
+      type: string
+      description: |
+        受控通道适配器编码。IN_APP 为一期站内信；WPS_IM 为一期预留/适配通道；WECHAT_WORK 为后续可启用通道。
+        所有外部通道均由服务端适配器及受管密钥配置决定，客户端不能提供或覆盖连接信息。
+      enum: [IN_APP, WPS_IM, WECHAT_WORK]
+    NotificationDeliveryState:
+      type: string
+      description: 服务端 outbox 投递状态；状态推进、重试次数和最终失败均由消费者处理，客户端无法写入或重放。
+      enum: [PENDING, DELIVERING, DELIVERED, RETRY_SCHEDULED, FAILED_FINAL, SUPPRESSED]
+    Notification:
+      type: object
+      additionalProperties: false
+      description: |
+        当前主体个人收件箱中的站内消息。创建时，收件人只可由服务端从工单关系、已发布流程候选人、订阅规则或当前 IAM 投影计算；
+        绝不接受客户端指定的用户/组织/外部 IM 标识。消息正文在入库前按模板变量允许列表渲染、纯文本/安全富文本净化和敏感字段脱敏。
+      required: [id, category, title, body, readState, createdAt, version]
+      properties:
+        id:
+          type: string
+          pattern: '^NTF-[A-Za-z0-9_-]{8,64}$'
+        category:
+          $ref: '#/components/schemas/NotificationCategory'
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 2000
+          description: 已按当前接收人权限脱敏、净化后的展示内容；不包含密码、令牌、完整联系方式、外部通道回执或无权工单内容。
+        sourceType:
+          type: string
+          enum: [TICKET, WORKFLOW_TASK, SLA_POLICY, SYSTEM_EVENT, INTEGRATION_EVENT]
+        sourceDisplayReference:
+          type: string
+          maxLength: 160
+          description: 仅在当前收件人仍被授权查看来源对象时返回的展示摘要；不得用作对象检索或跨对象授权凭据。
+        readState:
+          $ref: '#/components/schemas/NotificationReadState'
+        readAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          minimum: 0
+          description: 当前收件人消息读取状态的乐观锁版本；读取或外部投递状态不会授予写入来源工单的权限。
+    NotificationPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    UnreadNotificationCountResponse:
+      type: object
+      additionalProperties: false
+      description: 仅当前认证主体可见站内消息的未读汇总；不按外部 IM 投递回执或未授权来源对象计数。
+      required: [unreadCount]
+      properties:
+        unreadCount:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+    NotificationPreference:
+      type: object
+      additionalProperties: false
+      description: |
+        当前 IAM 主体对单一通道/类别的偏好。`effectiveEnabled` 始终由服务端按通道政策、IAM 映射和强制待办规则计算；
+        用户不能通过偏好接口创建外部收件人、修改通道配置或关闭必须投递的流程待办。
+      required: [channel, category, userEnabled, effectiveEnabled, mandatory, version, updatedAt]
+      properties:
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        category:
+          $ref: '#/components/schemas/NotificationCategory'
+        userEnabled:
+          type: boolean
+          description: 当前主体保存的可选偏好；强制待办即使为 false 也不会关闭有效投递。
+        effectiveEnabled:
+          type: boolean
+          description: 服务端最终生效结果，综合强制策略、受管通道可用性和当前 IAM 映射决定。
+        mandatory:
+          type: boolean
+          description: 为 true 时至少 IN_APP 有效且不可退订；例如 MANDATORY_WORKFLOW_TASK。
+        version:
+          type: integer
+          minimum: 0
+        updatedAt:
+          type: string
+          format: date-time
+    NotificationPreferencePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 30
+          items:
+            $ref: '#/components/schemas/NotificationPreference'
+    NotificationPreferenceUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled, version]
+      x-server-enforced:
+        - current-iam-subject-only
+        - managed-channel-and-current-iam-mapping-check
+        - mandatory-workflow-task-cannot-unsubscribe
+        - subject-operation-channel-category-request-fingerprint-anti-replay
+        - optimistic-lock
+        - immutable-audit-event
+      properties:
+        enabled:
+          type: boolean
+          description: 可选类别的偏好；强制待办类别不能使 effectiveEnabled 变为 false。
+        version:
+          type: integer
+          minimum: 0
+    NotificationMarkReadRequest:
+      type: object
+      additionalProperties: false
+      required: [version]
+      x-server-enforced:
+        - current-recipient-object-authorization
+        - message-retention-and-visibility-check
+        - subject-operation-notification-request-fingerprint-anti-replay
+        - recipient-read-state-optimistic-lock
+        - immutable-audit-event
+      properties:
+        version:
+          type: integer
+          minimum: 0
+          description: 当前收件人消息读取状态的乐观锁版本；冲突时不得覆盖或重新投递。
+    NotificationDelivery:
+      type: object
+      additionalProperties: false
+      description: |
+        当前收件人可见的投递状态摘要。一个站内消息可有多个由服务端策略选择的通道投递记录；
+        该对象不暴露 outbox 载荷、供应商消息 ID、目标地址、回执正文、重试策略细节或任何受管密钥引用。
+      required: [id, channel, state, attemptCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        state:
+          $ref: '#/components/schemas/NotificationDeliveryState'
+        attemptCount:
+          type: integer
+          minimum: 0
+          maximum: 20
+          description: 仅为脱敏计数；实际重试退避和最大次数由服务端通道策略固定。
+        lastAttemptAt:
+          type: string
+          format: date-time
+        nextRetryAt:
+          type: string
+          format: date-time
+          description: 仅 RETRY_SCHEDULED 时可返回；服务端计算，客户端不能以此触发或延迟投递。
+        terminalReasonCode:
+          type: string
+          enum: [RECIPIENT_UNAVAILABLE, CHANNEL_DISABLED, POLICY_SUPPRESSED, PROVIDER_REJECTED, RETRY_EXHAUSTED]
+          description: 仅最终失败/抑制时返回的通用原因码；不包含供应商响应、目标标识或配置细节。
+        createdAt:
+          type: string
+          format: date-time
+        deliveredAt:
+          type: string
+          format: date-time
+    NotificationDeliveryPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationDelivery'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    NotificationDeliveryRecord:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: |
+        `notification_delivery` 持久化记录的安全模型。每一条通道投递均保存命中的规则/路由快照、模板版本和收件人身份快照，
+        以避免规则变更、人员调岗或通道调整改写历史；普通收件人 API 只能返回脱敏的 `NotificationDelivery` 摘要。
+      required: [id, notificationId, recipient, channel, routingSnapshot, payload, state, attemptCount, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        notificationId:
+          type: string
+          format: uuid
+        recipient:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        routingSnapshot:
+          $ref: '#/components/schemas/NotificationRoutingSnapshot'
+        payload:
+          $ref: '#/components/schemas/NotificationDeliveryPayload'
+        state:
+          $ref: '#/components/schemas/NotificationDeliveryState'
+        attemptCount:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+    NotificationOutboxRecord:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: |
+        服务端事务性 outbox 记录模型：业务事务与创建消息/投递意图原子提交，异步消费者以唯一投递键获取、锁定并处理。
+        该模型不得通过普通 API 返回，也不得包含明文密钥、外部端点、收件人地址、供应商回执或可执行模板；原始载荷仅在受控加密存储内按最小权限访问。
+      required: [id, notificationId, channel, deliveryKey, routingSnapshot, payload, state, attemptCount, availableAt, createdAt, auditEventId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        notificationId:
+          type: string
+          format: uuid
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        deliveryKey:
+          type: string
+          maxLength: 128
+          description: 服务端生成并对 notification、收件人身份快照、通道和模板版本唯一约束的投递幂等键；不能由客户端提供或复用。
+        routingSnapshot:
+          $ref: '#/components/schemas/NotificationRoutingSnapshot'
+          description: 创建投递意图时固化的命中发布规则/IN_APP fallback/默认路由快照；后续规则变更不得回写。
+        payload:
+          $ref: '#/components/schemas/NotificationDeliveryPayload'
+          description: 受控加密存储的服务端渲染载荷；不通过普通 API 返回。
+        state:
+          $ref: '#/components/schemas/NotificationDeliveryState'
+        attemptCount:
+          type: integer
+          minimum: 0
+        availableAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        auditEventId:
+          type: string
+          maxLength: 128
+    ManagedSecretReferenceStatus:
+      type: string
+      description: 只反映受管密钥引用的可用性，不返回密钥名称、路径、值、版本或任何连接参数。
+      enum: [NOT_REQUIRED, CONFIGURED, UNAVAILABLE, ROTATION_REQUIRED]
+    NotificationChannelConfigurationStatus:
+      type: object
+      additionalProperties: false
+      description: |
+        通道受管配置状态。WPS IM、企业微信等外部 IM 适配器只可使用部署环境/密钥服务注入的受管密钥引用；
+        平台数据库、API、审计和日志均不得存储或返回明文密钥、回调 URL、租户 ID、应用 ID 或收件人映射。
+      required: [channel, enabled, adapterState, managedSecretReferenceStatus, lastCheckedAt]
+      properties:
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        enabled:
+          type: boolean
+        adapterState:
+          type: string
+          enum: [NOT_CONFIGURED, READY, DEGRADED, DISABLED]
+        managedSecretReferenceStatus:
+          $ref: '#/components/schemas/ManagedSecretReferenceStatus'
+        lastCheckedAt:
+          type: string
+          format: date-time
+        capability:
+          type: string
+          enum: [IN_APP_DELIVERY, EXTERNAL_IM_DELIVERY]
+        configurationVersion:
+          type: string
+          maxLength: 64
+          description: 脱敏的受管配置版本摘要，用于审计和变更比对；不是密钥版本或可用于定位密钥的引用。
+        externalCardLinkAuthentication:
+          type: string
+          enum: [PLATFORM_AUTHENTICATION_REQUIRED]
+          description: 外部 IM 卡片只能跳转至受信任工单平台；SSO 未启用时仍进入平台既有认证流程，不随链接携带令牌。
+    NotificationChannelConfigurationStatusPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/NotificationChannelConfigurationStatus'
+    ControlledNotificationTestRecipientScope:
+      type: string
+      description: 测试收件人范围由服务端最终校验并解析，绝不接受任意人员或外部地址。
+      enum: [CURRENT_ACTOR, PRE_REGISTERED_TEST_GROUP]
+    ControlledNotificationTestDeliveryRequest:
+      type: object
+      additionalProperties: false
+      required: [recipientScope, reason]
+      x-server-enforced:
+        - platform-administrator-authorization
+        - configured-channel-and-managed-secret-reference-check
+        - server-determined-test-recipient-only
+        - fixed-plain-text-test-template-only
+        - subject-operation-channel-request-fingerprint-anti-replay
+        - channel-test-rate-limit
+        - transactional-outbox-and-delivery-unique-key
+        - immutable-audit-event
+      properties:
+        recipientScope:
+          $ref: '#/components/schemas/ControlledNotificationTestRecipientScope'
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+          description: 受控测试理由；服务端脱敏并审计。不得包含密钥、令牌、收件人地址、URL 或业务工单内容。
+    ControlledNotificationTestDeliveryResult:
+      type: object
+      additionalProperties: false
+      required: [testDeliveryId, channel, state, acceptedAt, auditEventId]
+      properties:
+        testDeliveryId:
+          type: string
+          pattern: '^NTEST-[A-Za-z0-9_-]{8,64}$'
+          description: 仅用于当前管理员查询其受控测试的审计关联；不用于消息内容或投递对象枚举。
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        state:
+          type: string
+          enum: [QUEUED, SUPPRESSED]
+          description: 仅表示已进入 outbox 或被安全策略抑制；不表示外部服务已接收。
+        acceptedAt:
+          type: string
+          format: date-time
+        auditEventId:
+          type: string
+          maxLength: 128
+    NotificationRoutingEvent:
+      type: string
+      description: 仅允许已发布、服务端产生的业务事件参与通道路由；客户端不得传入自定义事件、表达式或事件载荷。
+      enum: [TICKET_CREATED, TICKET_ASSIGNED, TICKET_STATUS_CHANGED, WORKFLOW_TASK_CREATED, WORKFLOW_TASK_REMINDER, SLA_BREACH_RISK, SLA_BREACHED, SYSTEM_ANNOUNCEMENT, INTEGRATION_ALERT]
+    NotificationRoutingRuleLifecycleStatus:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, RETIRED, REJECTED]
+    NotificationRoutingResolution:
+      type: string
+      enum: [PUBLISHED_RULE, IN_APP_FALLBACK, SYSTEM_IN_APP_DEFAULT]
+    NotificationRoutingRule:
+      type: object
+      additionalProperties: false
+      description: |
+        组织到通道的受控配置规则。它只为服务端已计算并已授权的收件人选择投递通道，不是收件人选择器；
+        不包含任何用户、群组、外部地址、供应商标识、端点、密钥、模板正文或可执行表达式。
+      required: [id, organizationIamOrganizationId, includeDescendants, events, channelCode, inAppFallback, priority, aggregationWindowSeconds, enabled, lifecycleStatus, version, createdAt, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^NRO-[A-Za-z0-9_-]{8,64}$'
+        organizationIamOrganizationId:
+          type: string
+          maxLength: 128
+          description: IAM 只读组织投影 ID；服务端校验当前管理范围和组织存在性，不返回/接受任意组织路径表达式。
+        includeDescendants:
+          type: boolean
+          description: 是否匹配该组织的后代组织；组织树解析仅由服务端 IAM 投影完成。
+        events:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/NotificationRoutingEvent'
+        channelCode:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        inAppFallback:
+          type: boolean
+          description: 外部通道不可用、收件人无受控外部映射或策略抑制时是否由服务端回退至 IN_APP；不能回退为任意地址或客户端指定通道。
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: 同一组织/事件的通道选择优先级（数值越小越优先）；服务端拒绝歧义并在发布时确定唯一优先匹配，IN_APP fallback 仅在优先通道不可用或策略抑制时触发。
+        aggregationWindowSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          description: 服务端对同一收件人、事件、来源对象和路由版本进行去重/聚合的固定窗口；窗口键与合并摘要由服务端生成，不能由客户端修改。
+        enabled:
+          type: boolean
+        lifecycleStatus:
+          $ref: '#/components/schemas/NotificationRoutingRuleLifecycleStatus'
+        version:
+          type: integer
+          minimum: 0
+          description: 草稿更新乐观锁版本；发布版本不可原地修改。
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        auditEventId:
+          type: string
+          maxLength: 128
+    NotificationRoutingRulePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationRoutingRule'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    NotificationRoutingRuleDraftUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [organizationIamOrganizationId, includeDescendants, events, channelCode, inAppFallback, priority, aggregationWindowSeconds, enabled, reason]
+      x-server-enforced:
+        - platform-administrator-and-organization-management-scope-authorization
+        - iam-organization-projection-validation
+        - published-event-and-channel-allowlist
+        - priority-conflict-and-unique-match-validation
+        - draft-only-no-direct-publication
+        - no-recipient-address-template-or-credential-input
+        - optimistic-lock-for-update
+        - immutable-audit-event
+      properties:
+        organizationIamOrganizationId:
+          type: string
+          maxLength: 128
+        includeDescendants:
+          type: boolean
+        events:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/NotificationRoutingEvent'
+        channelCode:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        inAppFallback:
+          type: boolean
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        aggregationWindowSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        enabled:
+          type: boolean
+        version:
+          type: integer
+          minimum: 0
+          description: 仅更新草稿时必填；创建时忽略。服务端拒绝使用该字段覆盖已发布版本。
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+          description: 变更理由；不得包含收件人地址、端点、密钥、令牌或业务敏感正文。
+    NotificationRoutingRulePublishRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      x-server-enforced:
+        - platform-administrator-and-organization-management-scope-authorization
+        - draft-version-freeze
+        - dual-review-and-separation-of-duties
+        - event-priority-channel-and-fallback-conflict-validation
+        - immutable-audit-event
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    NotificationRoutingRulePublishRequestResult:
+      type: object
+      additionalProperties: false
+      required: [publishRequestId, routingRuleId, frozenVersion, status, auditEventId]
+      properties:
+        publishRequestId:
+          type: string
+          pattern: '^NRP-[A-Za-z0-9_-]{8,64}$'
+        routingRuleId:
+          type: string
+          pattern: '^NRO-[A-Za-z0-9_-]{8,64}$'
+        frozenVersion:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum: [PENDING_REVIEW]
+        auditEventId:
+          type: string
+          maxLength: 128
+    NotificationRoutingSnapshot:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: |
+        每条 `notification_delivery` 与对应 outbox 投递意图在创建时固化的路由事实；后续规则编辑、组织调整和通道配置变更不得回写。
+        仅受控审计/运维链路按最小权限查看，普通收件人投递状态接口不返回本对象。
+      required: [resolution, matchedOrganizationIamOrganizationId, event, requestedChannel, resolvedChannel, inAppFallbackEnabled, inAppFallbackApplied, aggregationWindowSeconds, capturedAt]
+      properties:
+        resolution:
+          $ref: '#/components/schemas/NotificationRoutingResolution'
+        matchedRuleId:
+          type: string
+          pattern: '^NRO-[A-Za-z0-9_-]{8,64}$'
+          description: 仅 PUBLISHED_RULE 或该规则触发 fallback 时保留；系统默认 IN_APP 路由可省略。
+        matchedRuleVersion:
+          type: integer
+          minimum: 0
+        matchedOrganizationIamOrganizationId:
+          type: string
+          maxLength: 128
+        includeDescendants:
+          type: boolean
+        event:
+          $ref: '#/components/schemas/NotificationRoutingEvent'
+        requestedChannel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        resolvedChannel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        inAppFallbackEnabled:
+          type: boolean
+        inAppFallbackApplied:
+          type: boolean
+        aggregationWindowSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          description: 投递创建时使用的去重/聚合窗口快照；规则更新后不得改变历史记录。
+        capturedAt:
+          type: string
+          format: date-time
+    NotificationRoutingPreviewMatchedRule:
+      type: object
+      additionalProperties: false
+      required: [id, version, priority, aggregationWindowSeconds, includeDescendants, lifecycleStatus]
+      properties:
+        id:
+          type: string
+          pattern: '^NRO-[A-Za-z0-9_-]{8,64}$'
+        version:
+          type: integer
+          minimum: 0
+        priority:
+          type: integer
+          minimum: 1
+        aggregationWindowSeconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+        includeDescendants:
+          type: boolean
+        lifecycleStatus:
+          $ref: '#/components/schemas/NotificationRoutingRuleLifecycleStatus'
+    NotificationRoutingPreview:
+      type: object
+      additionalProperties: false
+      description: 脱敏路由计算结果；不解析收件人、不生成实际消息、不泄露外部通道配置，实际投递仍以服务端实时计算并保存快照为准。
+      required: [organizationIamOrganizationId, event, resolution, requestedChannel, resolvedChannel, inAppFallbackApplied]
+      properties:
+        organizationIamOrganizationId:
+          type: string
+          maxLength: 128
+        event:
+          $ref: '#/components/schemas/NotificationRoutingEvent'
+        resolution:
+          $ref: '#/components/schemas/NotificationRoutingResolution'
+        requestedChannel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        resolvedChannel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        inAppFallbackApplied:
+          type: boolean
+        matchedRule:
+          $ref: '#/components/schemas/NotificationRoutingPreviewMatchedRule'
+    WpsImManagedConfiguration:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: |
+        仅部署配置/受管密钥服务中的 WPS 企业应用适配器配置模型，绝不作为 API 响应、审计详情或日志输出。
+        `secretRef` 只是受管密钥引用，密钥值不得进入数据库或应用配置文件；endpoint 与 platformBaseUrl 由发布的服务端允许列表校验。
+      required: [appId, endpoint, secretRef, platformBaseUrl, templateRef]
+      properties:
+        appId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: WPS 企业应用标识，仅受管适配器配置可读，不能由浏览器/API 客户端提供。
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 500
+          description: 受控 WPS IM API HTTPS/内网端点；必须匹配服务端允许列表，禁止模板或请求动态覆盖。
+        secretRef:
+          type: string
+          minLength: 1
+          maxLength: 256
+          x-managed-secret-reference: true
+          description: 受管密钥服务或部署环境的引用标识；仅适配器运行时解析，禁止记录/返回明文或可定位路径。
+        platformBaseUrl:
+          type: string
+          format: uri
+          maxLength: 500
+          description: 受信任工单平台基地址；卡片 targetUrl 只能由该基地址与服务器允许的内部资源相对路径拼接生成。
+        templateRef:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 已发布、受控的 WPS 通知模板版本引用；客户端不得传入模板正文或变量表达式。
+    ServerGeneratedPlatformTargetUrl:
+      type: string
+      format: uri
+      maxLength: 1000
+      x-server-enforced:
+        - trusted-platform-base-url
+        - allowed-internal-relative-resource
+        - no-token-or-sensitive-query-parameter
+      description: |
+        仅由服务端根据 WPS 受管 `platformBaseUrl` 与已授权的工单/待办内部相对路径生成。禁止客户端提供、重定向至任意 URL、
+        拼接访问令牌/会话/SSO code/密码或透传外部地址；点击后始终进入工单平台认证，SSO 未启用时仍按平台正常认证流程处理。
+    ServerGeneratedInternalNavigation:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: |
+        外部 IM 卡片的服务端生成内部跳转信息。认证前只保留经签名/绑定会话的内部恢复目标；认证成功后平台仅恢复该允许路径，
+        不接受 query、Referer、卡片正文或客户端请求中的任意 returnUrl/redirectUrl。
+      required: [internalPath, targetUrl, authenticationRequired, resumeAfterAuthentication]
+      properties:
+        internalPath:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '^/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]*$'
+          description: 服务端允许列表中的平台内部资源相对路径（如已授权工单/待办）；禁止协议、`..`、反斜杠、查询参数、片段和开放重定向。
+        targetUrl:
+          $ref: '#/components/schemas/ServerGeneratedPlatformTargetUrl'
+        authenticationRequired:
+          type: boolean
+          const: true
+        resumeAfterAuthentication:
+          type: boolean
+          const: true
+    WpsImCardPayload:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: 由服务端固定模板渲染的 WPS 企业应用通知卡片载荷；不能接受客户端正文、模板变量、跳转链接或身份标识。
+      required: [appId, templateRef, title, body, navigation]
+      properties:
+        appId:
+          type: string
+          maxLength: 128
+        templateRef:
+          type: string
+          maxLength: 128
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 2000
+          description: 已按模板允许变量和数据权限净化/脱敏后的卡片文本。
+        navigation:
+          $ref: '#/components/schemas/ServerGeneratedInternalNavigation'
+    NotificationDeliveryPayload:
+      type: object
+      additionalProperties: false
+      x-internal-only: true
+      description: 通道投递的服务器生成安全载荷。所有字段均来自已发布模板、服务端授权来源与受管配置，不能来自浏览器请求或工单自由文本的未净化直通。
+      required: [channel, templateRef]
+      properties:
+        channel:
+          $ref: '#/components/schemas/NotificationChannelCode'
+        templateRef:
+          type: string
+          maxLength: 128
+        wpsImCard:
+          $ref: '#/components/schemas/WpsImCardPayload'
+          description: 仅 channel 为 WPS_IM 时存在。
     TicketType:
       type: string
       enum: [INCIDENT, SERVICE_REQUEST, ACCESS_REQUEST, PROBLEM, CHANGE]
@@ -2546,7 +3736,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500

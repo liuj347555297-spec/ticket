@@ -3,6 +3,7 @@ package cn.servicehub.workflow.application;
 import cn.servicehub.audit.AuditEvent;
 import cn.servicehub.audit.AuditEventPublisher;
 import cn.servicehub.iam.domain.IamUserProjectionRepository;
+import cn.servicehub.notification.application.NotificationService;
 import cn.servicehub.security.CurrentUser;
 import cn.servicehub.security.CurrentUserProvider;
 import cn.servicehub.security.ObjectAction;
@@ -43,14 +44,15 @@ public class TicketWorkflowService {
     private final ObjectAuthorizationService authorizationService;
     private final IamUserProjectionRepository iamUsers;
     private final AuditEventPublisher audit;
+    private final NotificationService notifications;
     private final Clock clock = Clock.systemUTC();
 
     public TicketWorkflowService(TicketWorkflowRepository workflowRepository, TicketRepository ticketRepository,
                                  WorkflowEnginePort workflowEngine, CurrentUserProvider currentUserProvider,
                                  ObjectAuthorizationService authorizationService, IamUserProjectionRepository iamUsers,
-                                 AuditEventPublisher audit) {
+                                 AuditEventPublisher audit, NotificationService notifications) {
         this.workflowRepository = workflowRepository; this.ticketRepository = ticketRepository; this.workflowEngine = workflowEngine;
-        this.currentUserProvider = currentUserProvider; this.authorizationService = authorizationService; this.iamUsers = iamUsers; this.audit = audit;
+        this.currentUserProvider = currentUserProvider; this.authorizationService = authorizationService; this.iamUsers = iamUsers; this.audit = audit; this.notifications = notifications;
     }
 
     @Transactional
@@ -85,6 +87,7 @@ public class TicketWorkflowService {
             default -> advanceLifecycle(ticket, instance, actor, command, now);
         };
         record(actor, "WORKFLOW_" + command.action().name(), ticketId, Map.of("from", ticket.status().name(), "to", result.status().name()));
+        notifications.workflowAction(result, command.action().name(), actor.iamUserId(), notificationTarget(command));
         return result;
     }
 
@@ -183,6 +186,12 @@ public class TicketWorkflowService {
     private void requireActiveTarget(String target) { requireActiveTargetAndReturn(target); }
     private String requireActiveTargetAndReturn(String target) { if (target == null || iamUsers.findActiveByIamUserId(target).isEmpty()) throw new IllegalArgumentException("Target IAM user is unavailable"); return target; }
     private String validText(String text, int max) { return text == null || text.isBlank() || text.length() > max ? null : text; }
+    private String notificationTarget(WorkflowActionCommand command) {
+        return switch (command.action()) {
+            case ASSIGN, TRANSFER, HANDOVER, ADD_COHANDLER -> command.targetIamUserId();
+            default -> null;
+        };
+    }
     private void record(CurrentUser actor, String action, String ticketId, Map<String, String> detail) { String requestId = MDC.get("requestId") == null ? "system" : MDC.get("requestId"); Instant now = clock.instant(); workflowRepository.appendEvent(ticketId, action, actor.iamUserId(), requestId, detail, now); audit.publish(new AuditEvent(now, requestId, actor.iamUserId(), action, "ticket", ticketId, detail)); }
 
     private record Transition(String expectedNode, TicketStatus nextStatus, String nextCandidateRole) {

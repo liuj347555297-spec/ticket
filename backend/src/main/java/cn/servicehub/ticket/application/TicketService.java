@@ -4,6 +4,7 @@ import cn.servicehub.audit.AuditEvent;
 import cn.servicehub.audit.AuditEventPublisher;
 import cn.servicehub.catalog.application.ServiceCatalogService;
 import cn.servicehub.catalog.domain.ServiceCatalogItem;
+import cn.servicehub.notification.application.NotificationService;
 import cn.servicehub.security.CurrentUser;
 import cn.servicehub.security.CurrentUserProvider;
 import cn.servicehub.security.ObjectAction;
@@ -36,12 +37,13 @@ public class TicketService {
     private final AuditEventPublisher auditEventPublisher;
     private final ServiceCatalogService serviceCatalogService;
     private final TicketWorkflowService workflowService;
+    private final NotificationService notificationService;
     private final Clock clock = Clock.systemUTC();
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
                          ObjectAuthorizationService authorizationService, IdentitySnapshotResolver identitySnapshotResolver,
                          AuditEventPublisher auditEventPublisher, ServiceCatalogService serviceCatalogService,
-                         TicketWorkflowService workflowService) {
+                         TicketWorkflowService workflowService, NotificationService notificationService) {
         this.ticketRepository = ticketRepository;
         this.currentUserProvider = currentUserProvider;
         this.authorizationService = authorizationService;
@@ -49,6 +51,7 @@ public class TicketService {
         this.auditEventPublisher = auditEventPublisher;
         this.serviceCatalogService = serviceCatalogService;
         this.workflowService = workflowService;
+        this.notificationService = notificationService;
     }
 
     public CreateTicketResult create(TicketCreateCommand command, String idempotencyKey) {
@@ -66,6 +69,7 @@ public class TicketService {
         if (!result.replayed()) {
             Ticket ticket = result.ticket();
             workflowService.startTicket(ticket, user);
+            notificationService.ticketCreated(ticket);
             auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_CREATED", "ticket", ticket.id(),
                 Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id())));
         }

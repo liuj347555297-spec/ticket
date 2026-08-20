@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ApiError } from '@/api/client'
 import { ticketApi, type Ticket, type TicketActionCode, type TicketAvailableAction, type TicketComment, type TicketLifecycleAction, type TicketStatus, type TicketTimelineEvent, type TicketType, type TicketWorkAction } from '@/api/tickets'
+import { notificationApi, type TicketNotificationSummary } from '@/api/notifications'
 
 const route = useRoute()
 const ticket = ref<Ticket | null>(null)
@@ -15,6 +16,7 @@ const actionSubmitting = ref(false)
 const actionNotice = ref('')
 const actionError = ref('')
 const actionForm = ref({ targetIamUserId: '', reason: '', detail: '' })
+const notificationSummary = ref<TicketNotificationSummary | null>(null)
 
 const typeNames: Record<TicketType, string> = { INCIDENT: '故障报修', SERVICE_REQUEST: '服务请求', ACCESS_REQUEST: '账号权限', PROBLEM: '问题管理', CHANGE: '变更申请' }
 const statusNames: Record<TicketStatus, string> = { DRAFT: '草稿', SUBMITTED: '已提交', PENDING_CLASSIFICATION: '待分类', PENDING_ASSIGNMENT: '待分派', PENDING_ACCEPTANCE: '待受理', IN_PROGRESS: '处理中', RESOLVED: '已解决', PENDING_USER_FEEDBACK: '待用户反馈', CLOSED: '已关闭', CANCELLED: '已撤销', ON_HOLD: '已挂起' }
@@ -78,7 +80,7 @@ async function loadComments(ticketId: string, dataSource: 'api' | 'demo'): Promi
 async function loadTicket(): Promise<void> {
   const ticketId = String(route.params.ticketId ?? '')
   loading.value = true; errorMessage.value = ''; selectedAction.value = null
-  try { const result = await ticketApi.get(ticketId); ticket.value = result.data; source.value = result.source; await loadComments(ticketId, result.source) } catch (error) { ticket.value = null; comments.value = []; errorMessage.value = error instanceof ApiError ? error.message : '无法加载此工单，可能已不存在或无权访问。' } finally { loading.value = false }
+  try { const result = await ticketApi.get(ticketId); ticket.value = result.data; source.value = result.source; await loadComments(ticketId, result.source); try { notificationSummary.value = (await notificationApi.ticketSummary(ticketId)).data } catch { notificationSummary.value = null } } catch (error) { ticket.value = null; comments.value = []; notificationSummary.value = null; errorMessage.value = error instanceof ApiError ? error.message : '无法加载此工单，可能已不存在或无权访问。' } finally { loading.value = false }
 }
 onMounted(loadTicket)
 watch(() => route.params.ticketId, loadTicket)
@@ -91,6 +93,7 @@ watch(() => route.params.ticketId, loadTicket)
   <template v-else-if="ticket">
     <div class="page-heading detail-heading"><div><div class="eyebrow">{{ ticket.id }} · {{ typeNames[ticket.type] }}</div><h2>{{ ticket.title }}</h2><div class="tag-row"><span class="tag" :class="ticket.priority === 'P1' ? 'tag--red' : 'tag--blue'">{{ ticket.priority }}</span><span class="status-pill" :class="`status-pill--${ticket.status.toLowerCase()}`">{{ statusNames[ticket.status] }}</span><span v-for="tag in ticket.tags ?? []" :key="tag.name" class="tag tag--muted">{{ tag.name }}</span></div></div></div>
     <p v-if="source === 'demo'" class="demo-notice">演示数据：动作表单仅供预览，已阻断提交；不代表当前身份、权限、审批或状态变更。</p>
+    <section v-if="notificationSummary" class="ticket-notification-summary" :class="{ 'ticket-notification-summary--unread': notificationSummary.unreadCount > 0 }"><span aria-hidden="true">♢</span><div><b>{{ notificationSummary.unreadCount ? `本工单有 ${notificationSummary.unreadCount} 条未读通知` : '本工单暂无未读通知' }}</b><small v-if="notificationSummary.latest">最近：{{ notificationSummary.latest.title }} · {{ formatFullTime(notificationSummary.latest.createdAt) }}</small></div><RouterLink to="/notifications">查看消息中心</RouterLink></section>
     <div class="ticket-detail-layout">
       <section class="panel detail-panel"><div class="panel-header"><div><h3>问题描述</h3><p>提交人填写的结构化信息与补充说明。</p></div></div><p class="ticket-description">{{ ticket.description || '暂无补充说明。' }}</p><dl class="detail-definition"><div><dt>服务目录</dt><dd>{{ ticket.serviceCatalogItem.name }}</dd></div><div><dt>创建时间</dt><dd>{{ formatFullTime(ticket.createdAt) }}</dd></div><div><dt>当前版本</dt><dd>v{{ ticket.version }}（写操作必须校验）</dd></div></dl></section>
       <aside class="detail-sidebar"><section class="panel detail-panel"><div class="panel-header"><div><h3>处理信息</h3><p>处理关系与状态以服务端为准。</p></div></div><dl class="detail-definition"><div><dt>当前状态</dt><dd>{{ statusNames[ticket.status] }}</dd></div><div><dt>当前处理人</dt><dd>{{ ticket.assignee?.displayName ?? '待后端分派' }}</dd></div><div><dt>处理组织</dt><dd>{{ ticket.assignee?.organizationName ?? '—' }}</dd></div></dl></section></aside>

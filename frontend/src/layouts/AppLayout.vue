@@ -3,9 +3,11 @@ import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { navigation } from '@/router'
 import { useSessionStore } from '@/stores/session'
+import { useNotificationStore } from '@/stores/notifications'
 
 const route = useRoute()
 const session = useSessionStore()
+const notifications = useNotificationStore()
 const title = computed(() => String(route.meta.label ?? 'ServiceHub'))
 const userInitial = computed(() => session.currentUser?.displayName?.slice(0, 1) ?? '访')
 const isDevelopmentPreview = computed(() => session.source === 'development-preview')
@@ -16,6 +18,11 @@ onMounted(async () => {
   } catch {
     // The application remains usable for public/development shell rendering. No client-side
     // authentication decision or privilege fallback is made when the identity endpoint fails.
+  }
+  try {
+    await notifications.loadUnreadCount()
+  } catch {
+    // Notification availability must not influence IAM session rendering or authorization.
   }
 })
 </script>
@@ -44,7 +51,9 @@ onMounted(async () => {
       <header class="topbar">
         <div><h1>{{ title }}</h1><p>服务台 / 当前工作区</p></div>
         <label class="global-search"><span>⌕</span><input type="search" placeholder="搜索工单、CI、知识库" /></label>
-        <button class="icon-button" type="button" aria-label="查看通知">♢</button>
+        <RouterLink class="icon-button notification-trigger" to="/notifications" aria-label="查看消息中心">
+          <span aria-hidden="true">♢</span><span v-if="notifications.unreadCount" class="notification-badge">{{ notifications.unreadCount > 99 ? '99+' : notifications.unreadCount }}</span>
+        </RouterLink>
         <RouterLink class="avatar" to="/iam-projection" aria-label="查看身份投影">{{ userInitial }}</RouterLink>
       </header>
       <p v-if="isDevelopmentPreview" class="session-preview-notice">开发预览身份：仅用于界面展示，权限始终由服务端 IAM 会话校验。</p>
