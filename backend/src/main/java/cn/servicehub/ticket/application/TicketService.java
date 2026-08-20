@@ -18,6 +18,7 @@ import cn.servicehub.ticket.domain.TicketQuery;
 import cn.servicehub.ticket.domain.TicketRepository;
 import cn.servicehub.ticket.domain.TicketStatus;
 import cn.servicehub.ticket.domain.TicketType;
+import cn.servicehub.workflow.application.TicketWorkflowService;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -34,17 +35,20 @@ public class TicketService {
     private final IdentitySnapshotResolver identitySnapshotResolver;
     private final AuditEventPublisher auditEventPublisher;
     private final ServiceCatalogService serviceCatalogService;
+    private final TicketWorkflowService workflowService;
     private final Clock clock = Clock.systemUTC();
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
                          ObjectAuthorizationService authorizationService, IdentitySnapshotResolver identitySnapshotResolver,
-                         AuditEventPublisher auditEventPublisher, ServiceCatalogService serviceCatalogService) {
+                         AuditEventPublisher auditEventPublisher, ServiceCatalogService serviceCatalogService,
+                         TicketWorkflowService workflowService) {
         this.ticketRepository = ticketRepository;
         this.currentUserProvider = currentUserProvider;
         this.authorizationService = authorizationService;
         this.identitySnapshotResolver = identitySnapshotResolver;
         this.auditEventPublisher = auditEventPublisher;
         this.serviceCatalogService = serviceCatalogService;
+        this.workflowService = workflowService;
     }
 
     public CreateTicketResult create(TicketCreateCommand command, String idempotencyKey) {
@@ -61,6 +65,7 @@ public class TicketService {
         });
         if (!result.replayed()) {
             Ticket ticket = result.ticket();
+            workflowService.startTicket(ticket, user);
             auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_CREATED", "ticket", ticket.id(),
                 Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id())));
         }

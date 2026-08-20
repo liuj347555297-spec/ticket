@@ -4,6 +4,8 @@ import cn.servicehub.iam.application.IamProjectionUnavailableException;
 import cn.servicehub.catalog.application.CatalogValidationException;
 import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
+import cn.servicehub.workflow.application.WorkflowConflictException;
+import cn.servicehub.workflow.application.WorkflowStateException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -48,6 +50,12 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiError> idempotencyConflict(IdempotencyConflictException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .body(error(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency key conflicts with a prior request", request));
+    }
+
+    @ExceptionHandler({WorkflowConflictException.class, WorkflowStateException.class})
+    ResponseEntity<ApiError> workflowConflict(RuntimeException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(error(HttpStatus.CONFLICT, "WORKFLOW_CONFLICT", "Workflow action conflicts with current state", request));
     }
 
     @ExceptionHandler(TicketNotFoundException.class)

@@ -59,6 +59,22 @@ public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
     }
 
     @Override
+    public boolean updateStatus(String ticketId, long expectedVersion, cn.servicehub.ticket.domain.TicketStatus status,
+                                java.time.Instant updatedAt) {
+        AtomicBoolean updated = new AtomicBoolean(false);
+        ticketsById.computeIfPresent(ticketId, (ignored, current) -> {
+            if (current.version() != expectedVersion) {
+                return current;
+            }
+            updated.set(true);
+            return new Ticket(current.id(), current.type(), status, current.priority(), current.title(), current.description(),
+                current.structuredFields(), current.tags(), current.relatedConfigurationItemIds(), current.requester(),
+                current.serviceCatalogItem(), current.createdAt(), updatedAt, current.version() + 1);
+        });
+        return updated.get();
+    }
+
+    @Override
     public long nextTicketSequence(java.time.LocalDate businessDate) {
         return ticketSequences.computeIfAbsent(businessDate, ignored -> new AtomicLong()).incrementAndGet();
     }

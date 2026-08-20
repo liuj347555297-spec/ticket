@@ -4,7 +4,8 @@ spring:
   # The default profile intentionally has no external database dependency. It keeps the
   # development-only in-memory ticket repository usable until the mysql profile is explicitly set.
   datasource:
-    url: jdbc:h2:mem:servicehub;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    # Do not use H2 MODE=MySQL here: Flowable's H2 DDL uses the native IDENTITY type.
+    url: jdbc:h2:mem:servicehub;DB_CLOSE_DELAY=-1
     username: sa
     password: ""
     driver-class-name: org.h2.Driver
@@ -18,6 +19,11 @@ spring:
   mvc:
     problemdetails:
       enabled: false
+flowable:
+  # The workflow port is backed by a real Flowable 7 engine in every profile.  The async executor
+  # is deliberately disabled until job locking/cluster topology is part of the deployment design.
+  async-executor-activate: false
+  database-schema-update: true
 server:
   error:
     include-message: never

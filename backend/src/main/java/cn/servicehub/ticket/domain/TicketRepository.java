@@ -14,6 +14,12 @@ public interface TicketRepository {
     List<Ticket> findAll(TicketQuery query);
 
     /**
+     * Updates only server-derived lifecycle state with compare-and-set semantics. A false result
+     * means that another action won first and the caller must reload rather than overwrite it.
+     */
+    boolean updateStatus(String ticketId, long expectedVersion, TicketStatus status, java.time.Instant updatedAt);
+
+    /**
      * Allocates a monotonically increasing number for the given UTC business date. Implementations
      * must make this durable when a database profile is active; application-memory counters are not
      * safe across restarts.

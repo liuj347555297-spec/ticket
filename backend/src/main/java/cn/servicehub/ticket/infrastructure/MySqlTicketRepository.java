@@ -112,6 +112,14 @@ public class MySqlTicketRepository implements TicketRepository {
     }
 
     @Override
+    public boolean updateStatus(String ticketId, long expectedVersion, TicketStatus status, Instant updatedAt) {
+        return jdbcTemplate.update("""
+            UPDATE ticket SET status = ?, updated_at = ?, version = version + 1
+            WHERE id = ? AND version = ?
+            """, status.name(), Timestamp.from(updatedAt), ticketId, expectedVersion) == 1;
+    }
+
+    @Override
     @Transactional
     public long nextTicketSequence(LocalDate businessDate) {
         jdbcTemplate.update("""

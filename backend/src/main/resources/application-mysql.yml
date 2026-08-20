@@ -18,4 +18,6 @@ spring:
     validate-migration-naming: true
     clean-disabled: true
   transaction:
-    default-timeout: 10s
+    # Flowable bootstraps and upgrades its own ACT_* schema in a single transaction.  Ten seconds
+    # is safe for ordinary requests but too short for that controlled startup operation.
+    default-timeout: 60s

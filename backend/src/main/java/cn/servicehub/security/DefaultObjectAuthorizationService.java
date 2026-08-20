@@ -13,6 +13,8 @@ public class DefaultObjectAuthorizationService implements ObjectAuthorizationSer
     private static final Set<String> TICKET_READ_ALL_ROLES = Set.of(
         "ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT", "ROLE_SERVICE_MANAGER",
         "ROLE_PLATFORM_ADMIN", "ROLE_AUDITOR");
+    private static final Set<String> TICKET_MUTATION_ROLES = Set.of(
+        "ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT", "ROLE_SERVICE_MANAGER", "ROLE_PLATFORM_ADMIN");
 
     @Override
     public void requireAuthorized(CurrentUser user, ObjectAuthorizationRequest request) {
@@ -28,6 +30,16 @@ public class DefaultObjectAuthorizationService implements ObjectAuthorizationSer
         }
         if (request.action() == ObjectAction.READ && (hasAnyAuthority(user, TICKET_READ_ALL_ROLES)
             || user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId")))) {
+            return;
+        }
+        if (request.action() == ObjectAction.COMMENT && (hasAnyAuthority(user, TICKET_MUTATION_ROLES)
+            || user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId")))) {
+            return;
+        }
+        if ((request.action() == ObjectAction.UPDATE || request.action() == ObjectAction.ASSIGN
+            || request.action() == ObjectAction.TRANSFER || request.action() == ObjectAction.APPROVE)
+            && (hasAnyAuthority(user, TICKET_MUTATION_ROLES)
+                || (request.action() == ObjectAction.UPDATE && user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId"))))) {
             return;
         }
         throw new AccessDeniedException("Ticket action is not authorized");

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="cn.servicehub.workflow">
+  <process id="servicehubTicketLifecycle" name="ServiceHub ticket lifecycle" isExecutable="true">
+    <startEvent id="start" />
+    <sequenceFlow id="f0" sourceRef="start" targetRef="classify" />
+    <userTask id="classify" name="分类" />
+    <sequenceFlow id="f1" sourceRef="classify" targetRef="assign" />
+    <userTask id="assign" name="分派" />
+    <sequenceFlow id="f2" sourceRef="assign" targetRef="accept" />
+    <userTask id="accept" name="受理" />
+    <sequenceFlow id="f3" sourceRef="accept" targetRef="processing" />
+    <userTask id="processing" name="处理中" />
+    <sequenceFlow id="f4" sourceRef="processing" targetRef="user_feedback" />
+    <userTask id="user_feedback" name="待用户反馈" />
+    <sequenceFlow id="f5" sourceRef="user_feedback" targetRef="closure" />
+    <userTask id="closure" name="关闭确认" />
+    <sequenceFlow id="f6" sourceRef="closure" targetRef="end" />
+    <endEvent id="end" />
+  </process>
+</definitions>
