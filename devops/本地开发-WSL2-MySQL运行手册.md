@@ -1,0 +1,96 @@
+# 本地开发：WSL2 Ubuntu + MySQL 运行手册
+
+适用范围：本机 WSL2 Ubuntu 内的开发 MySQL。本文不记录、展示或生成任何密码、令牌、连接串或其他密钥。实际密钥只能保存在受管密钥工具或本机未纳入 Git 的环境文件中。
+
+## 1. 安全边界
+
+| 项目 | 要求 |
+|---|---|
+| 应用数据库身份 | 仅使用专用应用账号，例如 `servicehub_app`；禁止使用 MySQL `root` 运行 Spring Boot。 |
+| 权限 | 开发期仅授予目标库所需的 `SELECT`、`INSERT`、`UPDATE`、`DELETE`、`CREATE`、`ALTER`、`INDEX`、`REFERENCES` 权限；不得授予 `GRANT OPTION`、全局权限或其他库权限。生产环境应将运行账号与迁移账号分离。 |
+| 网络暴露 | 开发期优先仅监听 WSL 本机；未经批准不得将 MySQL 暴露到局域网或公网。 |
+| 密钥 | 禁止写入 Git、Markdown、脚本、命令历史、构建日志或工单附件。使用环境变量注入，值以 `<SECRET>` 表示。 |
+| 数据 | 仅放脱敏/虚构开发数据；不得导入生产个人信息、工单、审计或附件。 |
+
+## 2. WSL2 与 MySQL 服务检查
+
+在 Windows PowerShell 查看发行版状态：
+
+```powershell
+wsl --status
+wsl -l -v
+```
+
+进入 Ubuntu 后检查 MySQL 服务（以下二选一，取决于 WSL 是否启用 systemd）：
+
+```bash
+sudo systemctl status mysql
+sudo systemctl start mysql
+sudo systemctl enable mysql
+```
+
+```bash
+sudo service mysql status
+sudo service mysql start
+```
+
+检查监听端口、版本和服务日志；命令输出不得复制包含凭据的内容：
+
+```bash
+ss -lntp | grep 3306
+mysql --version
+sudo journalctl -u mysql --since '15 minutes ago' --no-pager
+```
+
+若服务启动失败，先查看上述日志、磁盘空间与端口占用；不得通过删除数据目录或重装数据库作为首次处理手段。
+
+## 3. 建库与专用账号原则
+
+由本机数据库管理员执行建库、账号创建与授权。账号仅允许从明确来源主机连接（本机常用 `localhost`），账号命名、数据库名和授权语句以本机规范为准。
+
+建议职责划分：
+
+| 身份 | 用途 | 权限边界 |
+|---|---|---|
+| 数据库管理员 | 建库、创建账号、备份恢复、紧急处置 | 仅人工操作，不进入应用配置。 |
+| Flyway 迁移账号 | 执行已评审的版本迁移 | 仅目标库 DDL/DML，迁移完成后按制度收回或禁用。 |
+| `servicehub_app` | Spring Boot 正常读写业务数据 | 仅目标库运行时 DML；无 DDL、无授权管理、无其他库访问。 |
+
+应用在库与账号创建完成后，先确认默认字符集为 `utf8mb4`、存储引擎为 InnoDB，并验证应用账号不能访问非目标库、不能授权、不能修改用户。
+
+## 4. 本地环境变量
+
+从项目后端提供的示例环境文件复制为本机私有文件，并保证私有文件已被 `.gitignore` 忽略。仅填入本机值，以下为占位符，不可原样用于连接：
+
+```dotenv
+SPRING_PROFILES_ACTIVE=mysql
+SERVICEHUB_DB_URL=jdbc:mysql://<HOST>:<PORT>/<DATABASE>?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+SERVICEHUB_DB_USERNAME=<APP_USERNAME>
+SERVICEHUB_DB_PASSWORD=<SECRET>
+```
+
+启动前仅在当前终端会话导入变量，结束后关闭终端或清除变量。不要用 `echo`、截图或聊天记录传递变量值。
+
+## 5. Flyway 迁移操作
+
+1. 迁移文件必须进入版本控制并经代码评审；不得手工修改已在共享环境执行过的版本文件。
+2. 迁移前备份目标库，核对当前版本、待执行迁移、影响对象和回滚方案。
+3. 以专用迁移账号执行应用迁移；应用运行账号不承担表结构变更。
+4. 迁移后核对 Flyway 历史表、关键索引与建单/查询健康检查，并保留不含密钥的执行证据。
+5. 迁移失败时先停止继续发布，保留日志并按已演练方案处理；不得直接修改 Flyway 历史表伪造成功。
+
+**回滚原则：** Flyway 社区版通常以“前向修复”为主。对不可逆 DDL、数据回填、删列/删表，必须在迁移评审中提供已验证的备份恢复或显式补偿迁移；未验证恢复前不得执行破坏性变更。
+
+## 6. 备份、恢复与本机清理
+
+- 变更前使用经批准的备份流程导出目标开发库；备份文件按本机加密与访问控制要求保存，禁止提交 Git 或上传到非授权位置。
+- 定期进行一次恢复演练，确认表结构、编码、权限与关键查询可用；恢复仅限独立开发库，禁止覆盖不明环境。
+- 排障数据、SQL 导出和日志可能含个人信息或业务内容，按敏感数据处理并在用途结束后依照本机制度安全清理。
+
+## 7. 上线前核对
+
+- [ ] Spring Boot 未使用 MySQL `root`、管理员账号或共享个人账号连接。
+- [ ] 数据库地址、账号、密码均来自受管配置；仓库、日志和文档无明文密钥。
+- [ ] MySQL 仅暴露给批准来源，TLS/网络策略按目标环境要求配置。
+- [ ] Flyway 迁移、备份恢复、应用健康检查和最小权限验证均已完成。
+- [ ] 生产账号、迁移账号、备份账号彼此分离，且权限经过复核。
