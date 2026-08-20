@@ -27,11 +27,11 @@ import org.springframework.test.web.servlet.MvcResult;
 class TicketControllerTest {
     private static final String CREATE_REQUEST = """
         {
-          "serviceCatalogItemId":"browser-performance",
+          "serviceCatalogItemId":"SC-browser-performance",
           "type":"INCIDENT",
           "title":"核协 E+ 页面卡顿",
           "description":"打开工作台后响应缓慢",
-          "structuredFields":{"browser":"Chrome","errorCode":"E-101"},
+          "structuredFields":{"browser":"Chrome","error_code":"E-101"},
           "tags":[{"name":"#核协E+","kind":"FREE"}]
         }
         """;
@@ -51,7 +51,7 @@ class TicketControllerTest {
             .andExpect(jsonPath("$.priority", is("P3")))
             .andExpect(jsonPath("$.requester.iamUserId", is("iam-u-1001")))
             .andExpect(jsonPath("$.requester.organizationName", is("信息技术部")))
-            .andExpect(jsonPath("$.serviceCatalogItem.id", is("browser-performance")));
+            .andExpect(jsonPath("$.serviceCatalogItem.id", is("SC-browser-performance")));
     }
 
     @Test

@@ -17,6 +17,9 @@ tags:
   - name: Workflow
   - name: Collaboration
   - name: Comments
+  - name: ServiceCatalog
+  - name: ServiceCatalogAdmin
+  - name: RuleMatching
 paths:
   /health:
     get:
@@ -478,6 +481,406 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /service-catalog/items:
+    get:
+      tags: [ServiceCatalog]
+      summary: 查询当前主体可见的已发布服务目录
+      description: |
+        仅返回已发布且当前 IAM 身份、组织、服务数据范围可申请的目录项。服务端过滤停用、草稿和无权目录；
+        不得以筛选、分页或 ID 探测枚举其他部门服务。目录路由、审批、优先级与 SLA 仅作展示预览，建单时仍由服务端重新计算。
+      operationId: listPublishedServiceCatalogItems
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: ticketType
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketType'
+        - name: categoryCode
+          in: query
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        '200':
+          description: 当前主体可申请的已发布服务目录分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceCatalogItemPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /service-catalog/items/{serviceCatalogItemId}/form:
+    get:
+      tags: [ServiceCatalog]
+      summary: 获取已发布目录项的动态建单表单
+      description: |
+        返回当前主体可见目录项的不可变已发布版本、字段定义、允许字典和脱敏展示规则；不返回草稿、内部路由条件、脚本或规则表达式。
+        前端按此渲染，服务端在建单和规则匹配时以同一已发布版本重新校验字段、联动、数据范围和字典值。
+      operationId: getPublishedServiceCatalogForm
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+      responses:
+        '200':
+          description: 已授权的已发布动态表单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedServiceCatalogForm'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /service-catalog/dictionaries/{dictionaryCode}/entries:
+    get:
+      tags: [ServiceCatalog]
+      summary: 查询动态表单可用字典项
+      description: |
+        仅用于已发布表单中声明的字典字段。服务端依据字段、目录版本及当前数据范围过滤有效项；
+        dictionaryCode 不是授权凭据，未知、未发布或无权字典按防枚举策略处理。不得返回维护备注、内部映射或被禁用值。
+      operationId: listPublishedDictionaryEntries
+      parameters:
+        - $ref: '#/components/parameters/DictionaryCode'
+        - name: serviceCatalogItemId
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+        - name: formVersion
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: fieldCode
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 64
+        - name: dependsOn
+          in: query
+          description: JSON 编码的已允许联动字段值；服务端只读取表单中声明的依赖字段，拒绝未知/敏感字段。
+          schema:
+            type: string
+            maxLength: 2000
+      responses:
+        '200':
+          description: 已授权且有效的字典项
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DictionaryEntryPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /service-catalog/rule-matches:
+    post:
+      tags: [RuleMatching]
+      summary: 建单前确定性规则案例匹配
+      description: |
+        只执行已发布的目录、CI、结构化字段、标准标签、错误码和关键词规则，返回可见的已解决案例/知识摘要；
+        当前不包含 AI、向量检索、语音、自动处置或自动建单。建议仅供用户参考，不能改变工单路由、优先级、审批或权限。
+        服务端以已发布表单重新验证提交字段，忽略客户端声称的匹配分、规则 ID 或案例可见性。
+      operationId: matchPreSubmissionRules
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleMatchRequest'
+      responses:
+        '200':
+          description: 当前主体可见的确定性规则建议；空数组表示未匹配，不代表故障不存在。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleMatchResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /admin/service-catalog/items:
+    get:
+      tags: [ServiceCatalogAdmin]
+      summary: 查询当前管理范围内的服务目录草稿和发布版本
+      description: 仅服务目录管理职责且具备相应组织/服务数据范围者可见；查询结果不得跨范围泄露草稿、内部规则、候选人或服务配置。
+      operationId: listManagedServiceCatalogItems
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ServiceCatalogLifecycleStatus'
+      responses:
+        '200':
+          description: 已按管理数据范围过滤的目录版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedServiceCatalogItemPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 创建受控服务目录草稿
+      description: |
+        仅创建草稿；不得以此直接发布或修改其他范围目录。服务端验证管理角色、组织/服务范围、字段规范、字典引用、标签策略和受管规则来源，
+        对每次写入固化身份快照、前后摘要和审计链。请求不能携带脚本、表达式、路由执行代码、审批结论或任意候选人名单。
+      operationId: createServiceCatalogDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceCatalogDraftUpsertRequest'
+      responses:
+        '201':
+          description: 草稿已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedServiceCatalogItem'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/service-catalog/items/{serviceCatalogItemId}:
+    get:
+      tags: [ServiceCatalogAdmin]
+      summary: 获取受控目录草稿或发布版本
+      description: 管理接口逐对象验证当前管理数据范围；响应仅返回满足职责所需的配置摘要，敏感路由/审批实现细节须按最小权限脱敏。
+      operationId: getManagedServiceCatalogItem
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+      responses:
+        '200':
+          description: 已授权的管理配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedServiceCatalogItem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [ServiceCatalogAdmin]
+      summary: 更新受控服务目录草稿
+      description: 只允许更新当前主体管理范围内的草稿，须携带乐观锁版本；发布版本不可原地修改，须复制为新草稿。服务端最终校验字段、字典、标签、规则和数据范围。
+      operationId: updateServiceCatalogDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceCatalogDraftUpsertRequest'
+      responses:
+        '200':
+          description: 草稿已更新并记录审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedServiceCatalogItem'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/service-catalog/items/{serviceCatalogItemId}/publish-requests:
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 提交服务目录发布申请
+      description: |
+        发布申请不是直接发布。服务端冻结候选草稿版本，重新校验引用字典、字段、联动、标签策略和规则来源，按策略创建复核/审批任务；
+        申请人不得审批自己的变更。审批完成前，运行中建单与规则匹配仍只使用最后一份已发布版本。
+      operationId: requestServiceCatalogPublication
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceCatalogPublishRequest'
+      responses:
+        '202':
+          description: 发布复核/审批已创建；不表示草稿已生效。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceCatalogPublishRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/service-catalog/dictionaries/{dictionaryCode}:
+    get:
+      tags: [ServiceCatalogAdmin]
+      summary: 查询受控字典定义及条目
+      description: 仅返回当前管理数据范围内的字典；不得借此枚举跨组织服务、内部映射或已删除历史值。
+      operationId: getManagedDictionary
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/DictionaryCode'
+      responses:
+        '200':
+          description: 已授权的字典定义
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDictionary'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [ServiceCatalogAdmin]
+      summary: 更新受控字典草稿
+      description: |
+        字典只允许受控管理者按范围创建或维护草稿；条目编码不可被重用为其他语义，已被发布表单引用的条目不得静默删除或变义。
+        服务端校验重复、层级/联动引用、适用范围与版本，并审计前后摘要；字典变更须走发布复核，不能通过前端缓存直接生效。
+      operationId: updateManagedDictionaryDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/DictionaryCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedDictionaryUpsertRequest'
+      responses:
+        '200':
+          description: 字典草稿已更新并待受控发布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedDictionary'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/service-catalog/tags:
+    get:
+      tags: [ServiceCatalogAdmin]
+      summary: 查询标准标签策略
+      description: 标准标签仅返回当前主体有权维护或使用的范围；禁止通过标签查询泄露问题、系统、组织或敏感业务名称。
+      operationId: listManagedStandardTags
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+      responses:
+        '200':
+          description: 已授权标准标签分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardTagPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 创建标准标签草稿
+      description: |
+        只接受规范化的展示名和受控适用范围；服务端执行 Unicode 规范化、去重、保留词、长度和 XSS/控制字符校验。
+        不允许以标签内容注入 HTML、脚本、链接、路由规则、数据范围或用户可见性；发布前需复核和不可篡改审计。
+      operationId: createStandardTagDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardTagUpsertRequest'
+      responses:
+        '201':
+          description: 标准标签草稿已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardTag'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
 components:
   securitySchemes:
     sessionCookie:
@@ -517,6 +920,20 @@ components:
       schema:
         type: string
         pattern: '^IAMSYNC-[A-Za-z0-9_-]{8,64}$'
+    ServiceCatalogItemId:
+      name: serviceCatalogItemId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^SC-[A-Za-z0-9_-]{3,60}$'
+    DictionaryCode:
+      name: dictionaryCode
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Z][A-Z0-9_]{1,62}$'
     Page:
       name: page
       in: query
@@ -899,6 +1316,571 @@ components:
     TicketPriority:
       type: string
       enum: [P1, P2, P3, P4]
+    ServiceCatalogLifecycleStatus:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, RETIRED, REJECTED]
+    FormFieldType:
+      type: string
+      description: 不支持可执行脚本、HTML、任意 SQL/表达式或客户端定义组件。附件、人员、CI 等特殊字段须使用各自受控契约，不能借动态表单绕过授权。
+      enum: [TEXT, TEXTAREA, NUMBER, DATE, DATETIME, BOOLEAN, SINGLE_SELECT, MULTI_SELECT, RADIO, CHECKBOX_GROUP, ERROR_CODE, TAGS]
+    FieldSensitivity:
+      type: string
+      enum: [INTERNAL, SENSITIVE]
+    FieldMaskingRule:
+      type: string
+      description: 输出脱敏规则；是否可见和是否可填仍由服务端按数据范围、用途和流程节点决定。
+      enum: [NONE, PARTIAL, FULL]
+    FormConditionOperator:
+      type: string
+      enum: [EQUALS, NOT_EQUALS, IN, NOT_IN, HAS_VALUE, NO_VALUE]
+    FormCondition:
+      type: object
+      additionalProperties: false
+      required: [fieldCode, operator]
+      properties:
+        fieldCode:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+          description: 只能引用同一已发布表单中位于当前字段之前的非敏感字段。
+        operator:
+          $ref: '#/components/schemas/FormConditionOperator'
+        values:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: string
+            maxLength: 200
+          description: HAS_VALUE/NO_VALUE 时省略；服务端以字典编码或规范值比对，不解释表达式。
+    FormFieldValidation:
+      type: object
+      additionalProperties: false
+      properties:
+        minLength:
+          type: integer
+          minimum: 0
+          maximum: 4000
+        maxLength:
+          type: integer
+          minimum: 1
+          maximum: 4000
+        minimum:
+          type: number
+        maximum:
+          type: number
+        patternCode:
+          type: string
+          maxLength: 64
+          description: 服务端内置、已审核的格式规则编码；不接受前端提交正则或脚本。
+        allowedFileExtensions:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            pattern: '^\.[A-Za-z0-9]{1,10}$'
+          description: 仅为受控附件字段的显示摘要；实际上传隔离、扫描和对象授权由附件接口负责。
+    FormField:
+      type: object
+      additionalProperties: false
+      required: [code, label, type, required, displayOrder, sensitivity, masking]
+      properties:
+        code:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{0,63}$'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: 纯文本标签；服务端输出编码，前端不得以 v-html 或等价方式渲染。
+        helpText:
+          type: string
+          maxLength: 300
+          description: 纯文本帮助；不含令牌、连接串、内部路由和 HTML。
+        type:
+          $ref: '#/components/schemas/FormFieldType'
+        required:
+          type: boolean
+        displayOrder:
+          type: integer
+          minimum: 1
+          maximum: 500
+        dictionaryCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,62}$'
+          description: SELECT/RADIO/CHECKBOX_GROUP 必填；服务端验证字典已发布、字段可用性及联动后的允许值。
+        validation:
+          $ref: '#/components/schemas/FormFieldValidation'
+        visibleWhen:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/FormCondition'
+          description: 所有条件同时满足才显示；联动仅支持受控比较，不支持脚本或自由表达式。
+        requiredWhen:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/FormCondition'
+        sensitivity:
+          $ref: '#/components/schemas/FieldSensitivity'
+        masking:
+          $ref: '#/components/schemas/FieldMaskingRule'
+        allowRuleMatching:
+          type: boolean
+          default: false
+          description: 是否允许该字段作为确定性案例匹配输入；SENSITIVE 字段默认且必须为 false，除非服务端批准例外并记录审计。
+    FormData:
+      type: object
+      description: |
+        字段键仅限指定目录表单版本的 FormField.code；服务端拒绝未知、隐藏/无权、只读、类型不符、无效字典值及未满足联动的字段。
+        该开放对象只为适配受控动态表单，不能承载状态、角色、人员、组织、队列、优先级、审批、路由、SLA 或任意流程变量。
+      additionalProperties: true
+    TagPolicy:
+      type: object
+      additionalProperties: false
+      required: [allowStandardTags, allowFreeTags, maxTags]
+      properties:
+        allowStandardTags:
+          type: boolean
+        allowFreeTags:
+          type: boolean
+        maxTags:
+          type: integer
+          minimum: 0
+          maximum: 20
+        allowedStandardTagCodes:
+          type: array
+          maxItems: 100
+          items:
+            type: string
+            pattern: '^TAG-[A-Za-z0-9_-]{3,60}$'
+          description: 空数组表示无目录白名单；标准标签是否可用仍由服务端按当前范围决定。
+    ServiceCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [id, code, name, ticketType, categoryCode, publishedVersion, formSchemaHash]
+      properties:
+        id:
+          type: string
+          pattern: '^SC-[A-Za-z0-9_-]{3,60}$'
+        code:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 200
+        summary:
+          type: string
+          maxLength: 500
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+        categoryCode:
+          type: string
+          maxLength: 64
+        publishedVersion:
+          type: integer
+          minimum: 1
+        formSchemaHash:
+          type: string
+          pattern: '^[A-Fa-f0-9]{64}$'
+          description: 已发布表单定义摘要，用于前端缓存失效提示；建单仍以服务端表单版本为准。
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/StandardTag'
+    ServiceCatalogItemPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceCatalogItem'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    PublishedServiceCatalogForm:
+      type: object
+      additionalProperties: false
+      required: [serviceCatalogItem, formVersion, formSchemaHash, fields, tagPolicy]
+      properties:
+        serviceCatalogItem:
+          $ref: '#/components/schemas/ServiceCatalogItem'
+        formVersion:
+          type: integer
+          minimum: 1
+        formSchemaHash:
+          type: string
+          pattern: '^[A-Fa-f0-9]{64}$'
+        fields:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/FormField'
+        tagPolicy:
+          $ref: '#/components/schemas/TagPolicy'
+        publishedAt:
+          type: string
+          format: date-time
+    DictionaryEntry:
+      type: object
+      additionalProperties: false
+      required: [code, label]
+      properties:
+        code:
+          type: string
+          maxLength: 64
+        label:
+          type: string
+          maxLength: 120
+          description: 纯文本展示值；服务端输出编码，禁止使用 HTML 作为字典标签。
+        parentCode:
+          type: string
+          maxLength: 64
+        displayOrder:
+          type: integer
+          minimum: 1
+          maximum: 100000
+    DictionaryEntryPage:
+      type: object
+      additionalProperties: false
+      required: [items, formVersion]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/DictionaryEntry'
+        formVersion:
+          type: integer
+          minimum: 1
+    RuleMatchRequest:
+      type: object
+      additionalProperties: false
+      required: [serviceCatalogItemId, formVersion, structuredFields]
+      x-server-enforced:
+        - published-catalog-and-form-version-check
+        - dynamic-form-field-and-dictionary-validation
+        - subject-data-scope-and-case-visibility
+        - deterministic-rule-source-and-version
+        - rate-limit-and-immutable-audit-event
+      properties:
+        serviceCatalogItemId:
+          type: string
+          pattern: '^SC-[A-Za-z0-9_-]{3,60}$'
+        formVersion:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+          description: 可选的纯文本补充；服务端规范化、脱敏并仅使用已发布关键词规则，不发送至外部 AI 或向量服务。
+        structuredFields:
+          $ref: '#/components/schemas/FormData'
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Tag'
+        relatedConfigurationItemIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 128
+    RuleMatch:
+      type: object
+      additionalProperties: false
+      required: [ruleCode, matchedFacts, suggestion]
+      properties:
+        ruleCode:
+          type: string
+          maxLength: 64
+          description: 已发布规则的稳定、非敏感编码；不返回内部条件、权重、脚本或可改写的规则表达式。
+        matchedFacts:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 160
+          description: 脱敏后的命中事实摘要；不得回显 SENSITIVE 字段或其他用户数据。
+        suggestion:
+          $ref: '#/components/schemas/CaseSuggestion'
+    CaseSuggestion:
+      type: object
+      additionalProperties: false
+      required: [kind, title, summary, action]
+      properties:
+        kind:
+          type: string
+          enum: [KNOWLEDGE_ARTICLE, RESOLVED_CASE]
+        referenceId:
+          type: string
+          maxLength: 128
+          description: 仅在当前主体具备查看权时返回；无权案例不得以 ID、标题、计数或匹配提示泄露存在性。
+        title:
+          type: string
+          maxLength: 200
+        summary:
+          type: string
+          maxLength: 1000
+          description: 已脱敏的纯文本摘要，不含历史工单个人信息、内部评论、附件或处理人信息。
+        action:
+          type: string
+          enum: [READ_AND_TRY, CONTINUE_CREATE]
+          description: 仅供用户选择；不会自动关闭、更新、合并或处置工单。
+    RuleMatchResponse:
+      type: object
+      additionalProperties: false
+      required: [ruleEngine, matches]
+      properties:
+        ruleEngine:
+          type: string
+          const: DETERMINISTIC_RULES
+        matches:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/RuleMatch'
+    ServiceCatalogDraftUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [version, code, name, ticketType, categoryCode, fields, tagPolicy, reason]
+      x-server-enforced:
+        - service-manager-role-and-data-scope
+        - catalog-version-and-optimistic-lock-check
+        - field-schema-and-dictionary-reference-validation
+        - no-script-or-executable-rule-content
+        - four-eyes-publication-policy
+        - immutable-audit-event
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{2,63}$'
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        summary:
+          type: string
+          maxLength: 500
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+        categoryCode:
+          type: string
+          maxLength: 64
+        applicableOrganizationIds:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            maxLength: 128
+          description: 仅可选择当前主体已管理的 IAM 组织投影；服务端验证其闭包范围，不信任客户端范围声明。
+        fields:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/FormField'
+        tagPolicy:
+          $ref: '#/components/schemas/TagPolicy'
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    ManagedServiceCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [serviceCatalogItem, formVersion, formSchemaHash, fields, tagPolicy, lifecycleStatus, version, auditEventId]
+      properties:
+        serviceCatalogItem:
+          $ref: '#/components/schemas/ServiceCatalogItem'
+        formVersion:
+          type: integer
+          minimum: 1
+        formSchemaHash:
+          type: string
+          pattern: '^[A-Fa-f0-9]{64}$'
+        fields:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/FormField'
+        tagPolicy:
+          $ref: '#/components/schemas/TagPolicy'
+        lifecycleStatus:
+          $ref: '#/components/schemas/ServiceCatalogLifecycleStatus'
+        version:
+          type: integer
+          minimum: 0
+        applicableOrganizationIds:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            maxLength: 128
+        auditEventId:
+          type: string
+          maxLength: 128
+    ManagedServiceCatalogItemPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ManagedServiceCatalogItem'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    ServiceCatalogPublishRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    ServiceCatalogPublishRequestResult:
+      type: object
+      additionalProperties: false
+      required: [requestId, status, auditEventId]
+      properties:
+        requestId:
+          type: string
+          maxLength: 128
+        status:
+          type: string
+          enum: [PENDING_REVIEW]
+        auditEventId:
+          type: string
+          maxLength: 128
+    ManagedDictionaryUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [version, name, entries, reason]
+      properties:
+        version:
+          type: integer
+          minimum: 0
+        name:
+          type: string
+          minLength: 2
+          maxLength: 120
+        entries:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/DictionaryEntry'
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    ManagedDictionary:
+      type: object
+      additionalProperties: false
+      required: [code, name, version, lifecycleStatus, entries, auditEventId]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{1,62}$'
+        name:
+          type: string
+          maxLength: 120
+        version:
+          type: integer
+          minimum: 0
+        lifecycleStatus:
+          $ref: '#/components/schemas/ServiceCatalogLifecycleStatus'
+        entries:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/DictionaryEntry'
+        auditEventId:
+          type: string
+          maxLength: 128
+    StandardTagUpsertRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, reason]
+      properties:
+        code:
+          type: string
+          pattern: '^TAG-[A-Za-z0-9_-]{3,60}$'
+        name:
+          type: string
+          pattern: '^#[^\\s#<>]{1,50}$'
+          description: 标准展示标签；服务端 Unicode 规范化后去重，禁止 HTML、控制字符和链接。
+        applicableOrganizationIds:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+            maxLength: 128
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    StandardTag:
+      type: object
+      additionalProperties: false
+      required: [code, name, lifecycleStatus]
+      properties:
+        code:
+          type: string
+          pattern: '^TAG-[A-Za-z0-9_-]{3,60}$'
+        name:
+          type: string
+          pattern: '^#[^\\s#<>]{1,50}$'
+        lifecycleStatus:
+          $ref: '#/components/schemas/ServiceCatalogLifecycleStatus'
+    StandardTagPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StandardTag'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
     Tag:
       type: object
       additionalProperties: false
@@ -914,12 +1896,22 @@ components:
     TicketCreateRequest:
       type: object
       additionalProperties: false
-      required: [serviceCatalogItemId, type, title, description, structuredFields]
+      required: [serviceCatalogItemId, serviceCatalogFormVersion, type, title, description, structuredFields]
+      x-server-enforced:
+        - authenticated-requester-identity-snapshot
+        - published-catalog-visibility-and-form-version-check
+        - dynamic-form-field-type-linkage-and-dictionary-validation
+        - tag-policy-and-normalization
+        - service-side-routing-priority-approval-and-sla-calculation
       properties:
         serviceCatalogItemId:
           type: string
           maxLength: 64
           description: 服务目录项 ID；后端以此加载必填项、路由、审批与 SLA 规则。
+        serviceCatalogFormVersion:
+          type: integer
+          minimum: 1
+          description: 用户实际填写时看到的已发布表单版本。版本过期、目录不可见或表单摘要不一致时由服务端拒绝或要求刷新，不能回退至草稿。
         type:
           $ref: '#/components/schemas/TicketType'
         title:
@@ -931,9 +1923,7 @@ components:
           maxLength: 4000
           description: 自然语言补充；服务端清洗、脱敏和长度校验。
         structuredFields:
-          type: object
-          description: 仅接受服务目录已发布表单定义中的字段；字段类型、必填性和联动规则由服务端验证。
-          additionalProperties: true
+          $ref: '#/components/schemas/FormData'
         tags:
           type: array
           maxItems: 20
@@ -1324,7 +2314,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500

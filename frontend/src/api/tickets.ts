@@ -60,6 +60,7 @@ export interface TicketPage {
 
 export interface TicketCreateRequest {
   serviceCatalogItemId: string
+  serviceCatalogFormVersion: number
   type: TicketType
   title: string
   description: string

@@ -5,6 +5,7 @@ import TicketCreateView from '@/views/TicketCreateView.vue'
 import TicketDetailView from '@/views/TicketDetailView.vue'
 import TicketListView from '@/views/TicketListView.vue'
 import IamProjectionView from '@/views/IamProjectionView.vue'
+import ServiceConfigView from '@/views/ServiceConfigView.vue'
 
 interface NavigationItem {
   path: string
@@ -20,7 +21,7 @@ export const navigation = [
   { path: '/tickets', name: 'tickets', label: '工单中心', icon: '▤', component: TicketListView },
   { path: '/tickets/new', name: 'create-ticket', label: '新建工单', icon: '+', primary: true, component: TicketCreateView },
   { path: '/knowledge', name: 'knowledge', label: '知识库', icon: '▤' },
-  { path: '/service-config', name: 'service-config', label: '服务配置', icon: '⚙' },
+  { path: '/service-config', name: 'service-config', label: '服务配置', icon: '⚙', component: ServiceConfigView },
   { path: '/iam-projection', name: 'iam-projection', label: 'IAM 投影', icon: '◎', component: IamProjectionView },
   { path: '/reports', name: 'reports', label: '运营报表', icon: '▥' },
   { path: '/operations', name: 'operations', label: '运行治理', icon: '◈' },

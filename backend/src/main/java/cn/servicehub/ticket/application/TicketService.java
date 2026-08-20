@@ -2,6 +2,8 @@ package cn.servicehub.ticket.application;
 
 import cn.servicehub.audit.AuditEvent;
 import cn.servicehub.audit.AuditEventPublisher;
+import cn.servicehub.catalog.application.ServiceCatalogService;
+import cn.servicehub.catalog.domain.ServiceCatalogItem;
 import cn.servicehub.security.CurrentUser;
 import cn.servicehub.security.CurrentUserProvider;
 import cn.servicehub.security.ObjectAction;
@@ -31,28 +33,30 @@ public class TicketService {
     private final ObjectAuthorizationService authorizationService;
     private final IdentitySnapshotResolver identitySnapshotResolver;
     private final AuditEventPublisher auditEventPublisher;
+    private final ServiceCatalogService serviceCatalogService;
     private final Clock clock = Clock.systemUTC();
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
                          ObjectAuthorizationService authorizationService, IdentitySnapshotResolver identitySnapshotResolver,
-                         AuditEventPublisher auditEventPublisher) {
+                         AuditEventPublisher auditEventPublisher, ServiceCatalogService serviceCatalogService) {
         this.ticketRepository = ticketRepository;
         this.currentUserProvider = currentUserProvider;
         this.authorizationService = authorizationService;
         this.identitySnapshotResolver = identitySnapshotResolver;
         this.auditEventPublisher = auditEventPublisher;
+        this.serviceCatalogService = serviceCatalogService;
     }
 
     public CreateTicketResult create(TicketCreateCommand command, String idempotencyKey) {
         CurrentUser user = currentUserProvider.requireCurrentUser();
         authorizationService.requireAuthorized(user, new ObjectAuthorizationRequest("ticket", "NEW", ObjectAction.CREATE,
             Map.of("serviceCatalogItemId", command.serviceCatalogItemId())));
+        ServiceCatalogItem catalogItem = serviceCatalogService.validateTicketInput(command);
         CreateTicketResult result = ticketRepository.createIdempotently(user.iamUserId(), idempotencyKey, command.fingerprint(), () -> {
             var now = clock.instant();
             Ticket ticket = new Ticket(nextTicketId(now), command.type(), TicketStatus.SUBMITTED, TicketPriority.P3,
                 command.title(), command.description(), command.structuredFields(), command.tags(), command.relatedConfigurationItemIds(),
-                identitySnapshotResolver.snapshotFor(user), new ServiceCatalogSummary(command.serviceCatalogItemId(),
-                "服务目录项 " + command.serviceCatalogItemId()), now, now, 0);
+                identitySnapshotResolver.snapshotFor(user), new ServiceCatalogSummary(catalogItem.id(), catalogItem.name()), now, now, 0);
             return ticket;
         });
         if (!result.replayed()) {

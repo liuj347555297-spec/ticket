@@ -1,6 +1,7 @@
 package cn.servicehub.web;
 
 import cn.servicehub.iam.application.IamProjectionUnavailableException;
+import cn.servicehub.catalog.application.CatalogValidationException;
 import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -30,6 +31,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     ResponseEntity<ApiError> illegalArgument(IllegalArgumentException ignored, HttpServletRequest request) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Invalid request", request));
+    }
+
+    @ExceptionHandler(CatalogValidationException.class)
+    ResponseEntity<ApiError> catalogValidation(CatalogValidationException ignored, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "SERVICE_CATALOG_INVALID", "Service catalog input is invalid", request));
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)

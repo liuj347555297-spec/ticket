@@ -77,7 +77,7 @@ public class SecurityConfiguration {
         configuration.setAllowedOrigins(properties.allowedOrigins());
         configuration.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name(), HttpMethod.PUT.name(),
             HttpMethod.PATCH.name(), HttpMethod.DELETE.name(), HttpMethod.OPTIONS.name()));
-        configuration.setAllowedHeaders(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id"));
+        configuration.setAllowedHeaders(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id", "Idempotency-Key"));
         configuration.setExposedHeaders(List.of("X-Request-Id"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
