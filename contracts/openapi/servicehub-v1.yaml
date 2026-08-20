@@ -326,6 +326,7 @@ paths:
         客户端仅表达动作意图及结构化业务事实；服务端逐对象校验身份、数据范围、当前状态、流程节点、候选人、审批策略和 SLA 影响，
         并决定是否创建审批任务或拒绝动作。客户端不得指定目标状态、流程变量、审批结论、优先级、队列或处理人。
       operationId: executeTicketAction
+      x-replay-protection: subject-operation-ticket-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/TicketId'
         - $ref: '#/components/parameters/CsrfToken'
@@ -362,6 +363,7 @@ paths:
         服务端必须验证该人员 IAM 投影有效、班次/技能/队列/组织数据范围、当前任务候选资格和审批要求；
         不能通过请求体变更提交人、角色、队列、流程受让人或历史身份快照。
       operationId: executeTicketWorkAction
+      x-replay-protection: subject-operation-ticket-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/TicketId'
         - $ref: '#/components/parameters/CsrfToken'
@@ -379,6 +381,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TicketWorkActionResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/workflow-tasks:
+    get:
+      tags: [Workflow]
+      summary: 查询当前主体可操作或可见的 BPMN 任务
+      description: |
+        仅返回当前工单上、当前主体为受让人/候选人/受限观察者的活动 Flowable 任务；服务端按工单关系、任务可见性、
+        流程定义版本和数据范围过滤。任务 ID、流程节点或候选资格只用于定位，绝不构成授权，且不能通过分页枚举其他候选人。
+        会签以多实例任务表达：响应只返回当前主体所需的会签进度摘要，不泄露无权参与人的身份或审批意见。
+      operationId: listTicketWorkflowTasks
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 当前主体可见的活动 BPMN 任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowTaskPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tickets/{ticketId}/workflow-tasks/{taskId}/actions:
+    post:
+      tags: [Workflow]
+      summary: 执行当前 Flowable 用户任务动作
+      description: |
+        用于受控抢单、释放、完成、委派及会签参与人增减/完成。服务端以 `ticketId`、`taskId`、当前流程实例与定义版本交叉验证，
+        再校验候选人/受让人、任务状态、数据范围、审批策略、工单 version 和 taskVersion；客户端不能借此设置流程变量、
+        直接审批自己发起的事项、替他人完成任务或改变流程节点。会签数量、完成条件及结束策略仅由已发布 BPMN/服务端规则决定。
+      operationId: executeTicketWorkflowTaskAction
+      x-replay-protection: subject-operation-ticket-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowTaskId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowTaskActionRequest'
+      responses:
+        '200':
+          description: 任务动作已完成，或服务端已创建后续任务/审批；响应不暴露未授权候选人。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowTaskActionResult'
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
@@ -419,6 +485,7 @@ paths:
         仅对有当前工单处理关系且具备内部协作权限的人员开放。评论内容服务端净化、脱敏和审计；
         internal 标记由接口固定，不接受客户端将评论公开给提单人或变更工单状态。
       operationId: createTicketInternalComment
+      x-replay-protection: subject-operation-ticket-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/TicketId'
         - $ref: '#/components/parameters/CsrfToken'
@@ -454,6 +521,7 @@ paths:
         仅为纠偏、应急或迁移提出申请，绝不直接跳转。服务端验证来源任务、流程定义版本、节点白名单、硬审批/授权节点、
         数据范围、任务处置、审批策略与 SLA 影响；通过后才创建审批和受控执行任务。任何跳转均写入不可篡改审计链。
       operationId: requestControlledTicketJump
+      x-replay-protection: subject-operation-ticket-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/TicketId'
         - $ref: '#/components/parameters/CsrfToken'
@@ -902,7 +970,10 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: 客户端为一次创建意图生成的 UUID；相同主体和键在保留期内只能产生一个结果。
+      description: |
+        客户端为一次写入意图生成的 UUID。服务端将键绑定到认证主体、接口、目标工单/任务和规范化请求指纹；
+        同一绑定在受控保留期内仅执行一次并返回原结果，使用相同键但不同指纹必须返回 IDEMPOTENCY_CONFLICT。
+        键不可跨主体、工单、任务或操作复用，且服务端记录首次接收时间、结果和审计关联以防重放。
       schema:
         type: string
         format: uuid
@@ -913,6 +984,15 @@ components:
       schema:
         type: string
         pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+    WorkflowTaskId:
+      name: taskId
+      in: path
+      required: true
+      description: Flowable 用户任务引用；仅作定位，服务端仍须验证工单、流程实例、当前节点及当前主体的任务关系。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
     SyncJobId:
       name: syncJobId
       in: path
@@ -1312,7 +1392,20 @@ components:
     TicketWorkAction:
       type: string
       description: 多人处理动作；目标人员仅是候选输入，不构成授权或直接受让。
-      enum: [TRANSFER, ADD_COLLABORATOR, REMOVE_COLLABORATOR, CLAIM, APPOINT_PRIMARY, HANDOVER_SHIFT]
+      enum: [TRANSFER, ADD_COLLABORATOR, REMOVE_COLLABORATOR, CLAIM, APPOINT_PRIMARY, HANDOVER_SHIFT, REQUEST_COUNTERSIGN]
+    WorkflowTaskAction:
+      type: string
+      description: |
+        仅对当前活动 Flowable 用户任务生效。CLAIM/RELEASE 处理候选任务的受让，DELEGATE 是受控委派，
+        ADD/REMOVE_COUNTERSIGNER 只能按已发布会签策略增减参与人，COMPLETE/COMPLETE_COUNTERSIGN 由服务端推进 BPMN。
+      enum: [CLAIM, RELEASE, COMPLETE, DELEGATE, ADD_COUNTERSIGNER, REMOVE_COUNTERSIGNER, COMPLETE_COUNTERSIGN]
+    WorkflowTaskKind:
+      type: string
+      enum: [USER_TASK, APPROVAL_TASK, COUNTERSIGN_TASK, SERVICE_TASK_WAIT]
+    WorkflowTaskAccess:
+      type: string
+      description: 当前主体与该任务的服务端计算关系；不是可转发的授权凭据。
+      enum: [ASSIGNEE, CANDIDATE, OBSERVER]
     TicketPriority:
       type: string
       enum: [P1, P2, P3, P4]
@@ -2023,6 +2116,8 @@ components:
         - current-task-candidate-check
         - approval-policy
         - workflow-assignment
+        - countersign-policy-and-multi-instance-check
+        - anti-replay-binding
         - immutable-audit-event
       properties:
         action:
@@ -2037,12 +2132,12 @@ components:
         targetIamUserId:
           type: string
           maxLength: 128
-          description: 转办、增加/移除协办、指定主办或交接班的候选目标；抢单时忽略，服务端以当前主体为候选人。
+          description: 转办、增加/移除协办、指定主办、交接班或请求会签的候选目标；抢单时忽略，服务端以当前主体为候选人。服务端验证其为当前流程/服务范围内有效候选人。
         structuredFields:
           type: object
           minProperties: 1
           additionalProperties: true
-          description: 仅允许动作定义的班次、技能、交接清单、协办职责等字段；不得传入流程受让人、角色或组织范围。
+          description: 仅允许动作定义的班次、技能、交接清单、协办职责或会签范围字段；不得传入流程受让人、角色、组织范围、会签完成条件或流程变量。
     TicketParticipant:
       type: object
       additionalProperties: false
@@ -2050,7 +2145,7 @@ components:
       properties:
         role:
           type: string
-          enum: [PRIMARY, COLLABORATOR]
+          enum: [PRIMARY, COLLABORATOR, COUNTERSIGNER]
         identity:
           $ref: '#/components/schemas/IdentitySnapshot'
         assignedAt:
@@ -2070,10 +2165,146 @@ components:
           maxItems: 50
           items:
             $ref: '#/components/schemas/TicketParticipant'
+    WorkflowTask:
+      type: object
+      additionalProperties: false
+      required: [id, taskDefinitionKey, kind, processDefinitionKey, processDefinitionVersion, taskVersion, access, createdAt]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          description: Flowable 任务引用；服务端仍须验证该任务属于路径中的工单及当前流程实例。
+        taskDefinitionKey:
+          type: string
+          maxLength: 128
+          description: 已发布 BPMN 定义的任务节点键；不得由客户端用于任意跳转。
+        kind:
+          $ref: '#/components/schemas/WorkflowTaskKind'
+        processDefinitionKey:
+          type: string
+          maxLength: 128
+        processDefinitionVersion:
+          type: integer
+          minimum: 1
+        taskVersion:
+          type: integer
+          minimum: 0
+          description: Flowable 任务/平台任务的乐观锁版本；任务写操作必须同时提交此值与工单 version。
+        access:
+          $ref: '#/components/schemas/WorkflowTaskAccess'
+        assignee:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        candidateCount:
+          type: integer
+          minimum: 0
+          description: 仅返回计数，避免无权用户枚举任务候选人；实际资格在执行时重新计算。
+        countersignProgress:
+          $ref: '#/components/schemas/CountersignProgress'
+        createdAt:
+          type: string
+          format: date-time
+        dueAt:
+          type: string
+          format: date-time
+          description: 服务端计算且按数据范围脱敏后的任务到期时间。
+    CountersignProgress:
+      type: object
+      additionalProperties: false
+      required: [mode, requiredCount, completedCount, pendingCount]
+      properties:
+        mode:
+          type: string
+          enum: [ALL_REQUIRED, QUORUM_REQUIRED]
+        requiredCount:
+          type: integer
+          minimum: 1
+        completedCount:
+          type: integer
+          minimum: 0
+        pendingCount:
+          type: integer
+          minimum: 0
+        canCurrentUserComplete:
+          type: boolean
+          description: 仅是当前读取时的服务端提示；提交时仍重新鉴权并校验任务版本。
+    WorkflowTaskPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowTask'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    WorkflowTaskActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action, version, taskVersion, reason, structuredFields]
+      x-server-enforced:
+        - ticket-object-authorization
+        - task-to-ticket-and-process-instance-binding
+        - process-definition-version-and-bpmn-node-check
+        - assignee-candidate-and-delegation-check
+        - countersign-policy-and-multi-instance-check
+        - approval-separation-of-duties
+        - ticket-and-task-optimistic-lock
+        - subject-operation-target-request-fingerprint-anti-replay
+        - immutable-audit-event
+      properties:
+        action:
+          $ref: '#/components/schemas/WorkflowTaskAction'
+        version:
+          type: integer
+          minimum: 0
+          description: 当前工单乐观锁版本；与 taskVersion 同时校验，任一冲突均不能推进流程。
+        taskVersion:
+          type: integer
+          minimum: 0
+          description: 当前 Flowable/平台任务乐观锁版本；抢单、释放、委派、会签和完成均须校验。
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: 动作理由；服务端脱敏、固化身份快照并写入审计摘要。
+        targetIamUserId:
+          type: string
+          maxLength: 128
+          description: 仅 DELEGATE、ADD_COUNTERSIGNER、REMOVE_COUNTERSIGNER 可提供候选目标；服务端重新计算目标资格、职责分离、班次和数据范围。
+        structuredFields:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: 已发布任务表单允许的字段，例如处理结论、交接清单或会签意见。禁止提交 BPMN 流程变量、目标节点、审批结论外的路由、候选人名单、会签阈值、SLA 时间或授权范围。
+    WorkflowTaskActionResult:
+      type: object
+      additionalProperties: false
+      required: [ticket, decision, slaImpact, auditEventId]
+      properties:
+        ticket:
+          $ref: '#/components/schemas/Ticket'
+        task:
+          $ref: '#/components/schemas/WorkflowTask'
+          description: 当前主体仍可见的后继或更新任务；任务已结束或无权查看时省略。
+        decision:
+          $ref: '#/components/schemas/WorkflowDecision'
+        slaImpact:
+          $ref: '#/components/schemas/SlaImpact'
+        auditEventId:
+          type: string
+          maxLength: 128
     TicketInternalCommentRequest:
       type: object
       additionalProperties: false
-      required: [version, reason, content]
+      required: [version, reason, content, structuredFields]
       x-server-enforced:
         - object-authorization
         - internal-collaboration-permission
@@ -2095,8 +2326,9 @@ components:
           description: 纯文本或受限富文本；服务端净化后存储和输出。
         structuredFields:
           type: object
+          minProperties: 1
           additionalProperties: true
-          description: 已发布评论模板允许的字段；服务端按模板白名单校验。
+          description: 已发布评论模板允许的字段，例如评论类别、处理阶段或交接标记；服务端按模板白名单校验。
     TicketComment:
       type: object
       additionalProperties: false

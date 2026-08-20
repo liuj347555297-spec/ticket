@@ -24,6 +24,22 @@ let tickets: Ticket[] = [
     serviceCatalogItem: { id: 'CAT-ERP-PERFORMANCE', name: '业务系统 - 页面性能问题' },
     tags: [{ name: '#ERP', kind: 'STANDARD' }, { name: '#采购订单', kind: 'FREE' }, { name: '#页面卡顿', kind: 'STANDARD' }],
     createdAt: '2026-08-19T09:12:00+08:00', updatedAt: '2026-08-19T09:28:00+08:00', version: 3,
+    availableActions: [
+      { code: 'REQUEST_USER_FEEDBACK', label: '待用户反馈' }, { code: 'RESOLVE', label: '解决' },
+      { code: 'HOLD', label: '挂起' }, { code: 'ESCALATE', label: '升级' }, { code: 'TRANSFER', label: '转办', requiresTarget: true },
+      { code: 'ADD_COLLABORATOR', label: '添加协办', requiresTarget: true }, { code: 'CLAIM', label: '抢单' },
+      { code: 'APPOINT_PRIMARY', label: '指定主办', requiresTarget: true }, { code: 'HANDOVER_SHIFT', label: '交接班', requiresTarget: true },
+      { code: 'INTERNAL_COMMENT', label: '内部评论' },
+    ],
+    participants: [
+      { role: 'PRIMARY', identity: demoAssignee, assignedAt: '2026-08-19T09:26:00+08:00' },
+      { role: 'COLLABORATOR', identity: { iamUserId: 'iam-u-000129', displayName: '王工', organizationName: '数字化运营中心 / 应用运维组', positionName: '数据库工程师', capturedAt: '2026-08-19T09:28:00+08:00' }, assignedAt: '2026-08-19T09:28:00+08:00' },
+    ],
+    timeline: [
+      { id: 'evt-001', label: '提交工单', occurredAt: '2026-08-19T09:12:00+08:00', note: '已记录提交时 IAM 身份快照。', actor: demoRequester, auditEventId: 'AUD-20260819-001' },
+      { id: 'evt-002', label: '分派并受理', occurredAt: '2026-08-19T09:26:00+08:00', note: '已进入应用运维处理队列。', actor: demoAssignee, auditEventId: 'AUD-20260819-002' },
+      { id: 'evt-003', label: '开始处理', occurredAt: '2026-08-19T09:28:00+08:00', note: '正在核查页面性能与相关监控。', actor: demoAssignee, auditEventId: 'AUD-20260819-003' },
+    ],
   },
   {
     id: 'TKT-20260818-000380', type: 'ACCESS_REQUEST', status: 'PENDING_ACCEPTANCE', priority: 'P3',
