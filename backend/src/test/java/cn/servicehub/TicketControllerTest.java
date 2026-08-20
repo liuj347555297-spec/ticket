@@ -50,7 +50,7 @@ class TicketControllerTest {
             .andExpect(jsonPath("$.status", is("SUBMITTED")))
             .andExpect(jsonPath("$.priority", is("P3")))
             .andExpect(jsonPath("$.requester.iamUserId", is("iam-u-1001")))
-            .andExpect(jsonPath("$.requester.organizationName", is("未同步组织")))
+            .andExpect(jsonPath("$.requester.organizationName", is("信息技术部")))
             .andExpect(jsonPath("$.serviceCatalogItem.id", is("browser-performance")));
     }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { navigation } from '@/router'
 import { useSessionStore } from '@/stores/session'
@@ -8,6 +8,16 @@ const route = useRoute()
 const session = useSessionStore()
 const title = computed(() => String(route.meta.label ?? 'ServiceHub'))
 const userInitial = computed(() => session.currentUser?.displayName?.slice(0, 1) ?? '访')
+const isDevelopmentPreview = computed(() => session.source === 'development-preview')
+
+onMounted(async () => {
+  try {
+    await session.loadCurrentUser()
+  } catch {
+    // The application remains usable for public/development shell rendering. No client-side
+    // authentication decision or privilege fallback is made when the identity endpoint fails.
+  }
+})
 </script>
 
 <template>
@@ -35,8 +45,9 @@ const userInitial = computed(() => session.currentUser?.displayName?.slice(0, 1)
         <div><h1>{{ title }}</h1><p>服务台 / 当前工作区</p></div>
         <label class="global-search"><span>⌕</span><input type="search" placeholder="搜索工单、CI、知识库" /></label>
         <button class="icon-button" type="button" aria-label="查看通知">♢</button>
-        <button class="avatar" type="button" aria-label="查看身份投影">{{ userInitial }}</button>
+        <RouterLink class="avatar" to="/iam-projection" aria-label="查看身份投影">{{ userInitial }}</RouterLink>
       </header>
+      <p v-if="isDevelopmentPreview" class="session-preview-notice">开发预览身份：仅用于界面展示，权限始终由服务端 IAM 会话校验。</p>
       <section class="page-content"><RouterView /></section>
     </main>
   </div>

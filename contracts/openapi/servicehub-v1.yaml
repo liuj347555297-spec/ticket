@@ -11,6 +11,7 @@ servers:
 tags:
   - name: System
   - name: Identity
+  - name: IdentitySync
   - name: Security
   - name: Tickets
   - name: Workflow
@@ -36,7 +37,9 @@ paths:
     get:
       tags: [Identity]
       summary: 获取当前 IAM 用户及平台投影
-      description: 返回只读 IAM 投影；不返回密码、IAM 令牌、完整联系方式或组织管理能力。
+      description: |
+        返回当前已认证主体的只读 IAM 用户/组织投影及当前授权摘要；不返回密码、IAM 令牌、完整联系方式或组织管理能力。
+        平台不创建本地账号、不编辑 IAM 用户或组织；响应仅用于展示，不得替代每次请求的服务端实时授权。
       operationId: getCurrentUser
       responses:
         '200':
@@ -47,6 +50,151 @@ paths:
                 $ref: '#/components/schemas/CurrentUserResponse'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+  /identity/organizations:
+    get:
+      tags: [Identity]
+      summary: 查询只读组织投影
+      description: |
+        仅返回当前主体在组织数据范围内可见的 IAM 组织投影。该接口没有创建、更新或删除语义；
+        禁止借由父节点、关键词或分页参数枚举越权组织。服务端根据当前主体实时计算可见范围。
+      operationId: listOrganizationProjections
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: parentIamOrganizationId
+          in: query
+          description: 仅作为当前可见范围内的父组织筛选条件；不具备该父组织可见权时按防枚举策略处理。
+          schema:
+            type: string
+            maxLength: 128
+        - name: q
+          in: query
+          description: 组织名称或编码关键词；服务端执行长度限制、转义和数据范围过滤。
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: includeDisabled
+          in: query
+          description: 默认不返回停用投影；仅具备 IAM 投影管理权的主体可显式查询。
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: 当前主体范围内的只读组织投影分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationProjectionPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /identity/users:
+    get:
+      tags: [Identity]
+      summary: 查询只读用户投影及候选人摘要
+      description: |
+        用于分派、审批候选人、消息投递和组织数据权限的只读查询。服务端按调用人数据范围、用途和最小字段集过滤；
+        不返回密码、认证令牌或不必要联系方式。不得用此接口创建、编辑、禁用本地用户，亦不得以搜索枚举全量 IAM 人员。
+      operationId: listUserProjections
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: iamOrganizationId
+          in: query
+          description: 仅作为当前主体有权访问的组织筛选条件。
+          schema:
+            type: string
+            maxLength: 128
+        - name: q
+          in: query
+          description: 姓名、登录名或工号关键词；服务端最小长度、转义、限流和范围过滤。
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 100
+        - name: candidateFor
+          in: query
+          description: 可选的服务/队列/流程候选人场景；服务端校验调用人是否能查看该场景及被查询人是否有效。
+          schema:
+            type: string
+            maxLength: 128
+        - name: includeDisabled
+          in: query
+          description: 默认不返回停用投影；仅具备 IAM 投影管理权的主体可显式查询。
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: 当前主体范围内的只读用户/候选人摘要分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProjectionPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /identity/sync-jobs:
+    post:
+      tags: [IdentitySync]
+      summary: 受控触发 IAM 投影同步
+      description: |
+        仅 `PLATFORM_ADMIN` 或被授予 IAM 投影运维职责的主体可调用。同步连接、凭据、字段映射和增量游标均仅在服务端受管配置中保存；
+        请求不接受 IAM 地址、密钥、用户/组织数据或任意脚本。服务端串行/幂等调度、记录来源版本和审计事件，且不会创建本地认证账号。
+      operationId: triggerIdentityProjectionSync
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentitySyncTriggerRequest'
+      responses:
+        '202':
+          description: 同步任务已被受控受理；不代表数据已同步完成。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentitySyncJob'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /identity/sync-jobs/{syncJobId}:
+    get:
+      tags: [IdentitySync]
+      summary: 查询 IAM 投影同步状态
+      description: |
+        仅 `PLATFORM_ADMIN`、IAM 投影运维职责或审计职责可查询。仅返回脱敏的运行摘要、计数、来源版本和审计关联，
+        不返回连接串、令牌、原始 IAM 载荷、完整失败记录或个人信息。
+      operationId: getIdentityProjectionSyncJob
+      x-required-platform-roles: [PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/SyncJobId'
+      responses:
+        '200':
+          description: 已授权的同步任务状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentitySyncJob'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /security/csrf:
     get:
       tags: [Security]
@@ -362,6 +510,13 @@ components:
       schema:
         type: string
         pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+    SyncJobId:
+      name: syncJobId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^IAMSYNC-[A-Za-z0-9_-]{8,64}$'
     Page:
       name: page
       in: query
@@ -450,7 +605,7 @@ components:
         authorization:
           type: object
           additionalProperties: false
-          required: [roles, dataScopes]
+          required: [roles, dataScopes, projectionVersion]
           properties:
             roles:
               type: array
@@ -461,10 +616,14 @@ components:
               description: 用于 UI 提示，后端仍必须在每次请求实时计算并校验。
               items:
                 $ref: '#/components/schemas/DataScopeSummary'
+            projectionVersion:
+              type: string
+              maxLength: 128
+              description: 当前 IAM 投影版本，仅用于界面刷新提示；不能作为授权、并发控制或历史身份依据。
     UserProjection:
       type: object
       additionalProperties: false
-      required: [iamUserId, displayName, status, organization]
+      required: [iamUserId, displayName, status, organization, positions, candidateSummary, projectionVersion]
       properties:
         iamUserId:
           type: string
@@ -481,6 +640,24 @@ components:
           enum: [ACTIVE, DISABLED]
         organization:
           $ref: '#/components/schemas/OrganizationSummary'
+        organizationPath:
+          type: array
+          maxItems: 32
+          description: 当前归属组织的根至叶路径，仅返回调用人有权查看的节点。
+          items:
+            $ref: '#/components/schemas/OrganizationSummary'
+        positions:
+          type: array
+          maxItems: 20
+          description: IAM 同步的岗位摘要；无岗位时返回空数组，不以本地字段补齐。
+          items:
+            $ref: '#/components/schemas/PositionSummary'
+        candidateSummary:
+          $ref: '#/components/schemas/CandidateSummary'
+        projectionVersion:
+          type: string
+          maxLength: 128
+          description: 此用户投影的来源版本或成功同步批次；不等同于业务身份快照版本。
     OrganizationSummary:
       type: object
       additionalProperties: false
@@ -492,10 +669,118 @@ components:
         name:
           type: string
           maxLength: 200
+    OrganizationProjection:
+      type: object
+      additionalProperties: false
+      required: [iamOrganizationId, code, name, status, path, projectionVersion]
+      properties:
+        iamOrganizationId:
+          type: string
+          maxLength: 128
+          description: IAM 不可变组织标识
+        code:
+          type: string
+          maxLength: 128
+        name:
+          type: string
+          maxLength: 200
+        parentIamOrganizationId:
+          type: string
+          maxLength: 128
+          description: 根组织可省略；服务端仅返回当前范围内可见的父组织引用。
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+        path:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/OrganizationSummary'
+        projectionVersion:
+          type: string
+          maxLength: 128
+          description: 来源 IAM 版本或成功同步批次。
+        lastSyncedAt:
+          type: string
+          format: date-time
+    OrganizationProjectionPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrganizationProjection'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    PositionSummary:
+      type: object
+      additionalProperties: false
+      required: [iamPositionId, name, status]
+      properties:
+        iamPositionId:
+          type: string
+          maxLength: 128
+        code:
+          type: string
+          maxLength: 128
+        name:
+          type: string
+          maxLength: 200
+        status:
+          type: string
+          enum: [ACTIVE, DISABLED]
+    CandidateSummary:
+      type: object
+      additionalProperties: false
+      required: [eligible, platformRoles, dataScopes]
+      properties:
+        eligible:
+          type: boolean
+          description: 对传入 candidateFor 场景的服务端计算结果；未传场景时表示基础投影可用性，并不授予受让权。
+        platformRoles:
+          type: array
+          maxItems: 20
+          description: 当前平台映射角色摘要；仅用于候选提示，执行动作时必须实时复核。
+          items:
+            $ref: '#/components/schemas/PlatformRole'
+        dataScopes:
+          type: array
+          maxItems: 100
+          description: 已脱敏的当前数据范围摘要；服务端不因本字段而放宽对象级授权。
+          items:
+            $ref: '#/components/schemas/DataScopeSummary'
+    UserProjectionPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserProjection'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
     DataScopeSummary:
       type: object
       additionalProperties: false
-      required: [scopeType, scopeId]
+      required: [scopeType, scopeId, accessLevel]
       properties:
         scopeType:
           type: string
@@ -503,9 +788,91 @@ components:
         scopeId:
           type: string
           maxLength: 128
+        accessLevel:
+          type: string
+          enum: [SELF, DIRECT, DESCENDANTS, ASSIGNED, MANAGED]
+        scopeName:
+          type: string
+          maxLength: 200
+          description: 可选展示摘要；不应包含无权查看的组织层级、CI 或业务敏感信息。
     PlatformRole:
       type: string
       enum: [REQUESTER, FIRST_LINE_SUPPORT, SECOND_LINE_SUPPORT, APPROVER, SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+    IdentitySyncTriggerRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, reason]
+      x-server-enforced:
+        - administrator-or-iam-operations-authorization
+        - configured-connector-only
+        - single-flight-or-idempotent-scheduling
+        - immutable-audit-event
+      properties:
+        mode:
+          type: string
+          enum: [INCREMENTAL, FULL]
+          description: FULL 同步受服务端频率、维护窗口和容量策略约束；不能由请求绕过。
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+          description: 受控触发理由；服务端脱敏、审计。不得填写连接串、密码、令牌或完整个人信息。
+    IdentitySyncJob:
+      type: object
+      additionalProperties: false
+      required: [id, mode, status, requestedAt, requestedBy, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^IAMSYNC-[A-Za-z0-9_-]{8,64}$'
+        mode:
+          type: string
+          enum: [INCREMENTAL, FULL]
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, PARTIALLY_SUCCEEDED, FAILED, CANCELLED]
+        requestedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+        requestedBy:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        sourceVersion:
+          type: string
+          maxLength: 128
+          description: 可公开的 IAM 来源版本/游标摘要；不得包含连接信息、令牌或原始载荷。
+        result:
+          $ref: '#/components/schemas/IdentitySyncResultSummary'
+        auditEventId:
+          type: string
+          maxLength: 128
+    IdentitySyncResultSummary:
+      type: object
+      additionalProperties: false
+      required: [organizationsRead, usersRead, rejectedRecords, sensitiveDetailAvailable]
+      properties:
+        organizationsRead:
+          type: integer
+          minimum: 0
+        usersRead:
+          type: integer
+          minimum: 0
+        rejectedRecords:
+          type: integer
+          minimum: 0
+        sensitiveDetailAvailable:
+          type: boolean
+          const: false
+          description: 接口不返回原始失败记录、个人信息或 IAM 载荷；受管审计系统按最小权限留存必要证据。
+        failureCode:
+          type: string
+          maxLength: 80
+          description: 仅返回稳定、脱敏错误码；不返回堆栈、连接地址或认证失败细节。
     CsrfTokenResponse:
       type: object
       additionalProperties: false
@@ -874,7 +1241,10 @@ components:
     IdentitySnapshot:
       type: object
       additionalProperties: false
-      required: [iamUserId, displayName, organizationName, capturedAt]
+      description: |
+        工单事件、审批、分派和审计在发生时固化的身份事实。它不是当前 IAM 投影的外键视图：人员调岗、改名、停用或组织重组后，
+        历史记录仍按本快照展示。写入仅由服务端从已校验的 IAM 投影生成，客户端不得提交或修改。
+      required: [iamUserId, displayName, organizationName, projectionVersion, capturedAt]
       properties:
         iamUserId:
           type: string
@@ -885,9 +1255,25 @@ components:
         organizationName:
           type: string
           maxLength: 200
+        iamOrganizationId:
+          type: string
+          maxLength: 128
         positionName:
           type: string
           maxLength: 200
+        iamPositionId:
+          type: string
+          maxLength: 128
+        platformRoles:
+          type: array
+          maxItems: 20
+          description: 事件发生时经服务端计算的角色摘要；仅在该历史记录的可见范围内返回。
+          items:
+            $ref: '#/components/schemas/PlatformRole'
+        projectionVersion:
+          type: string
+          maxLength: 128
+          description: 生成快照所依据的 IAM 投影来源版本/同步批次，用于历史一致性追溯。
         capturedAt:
           type: string
           format: date-time

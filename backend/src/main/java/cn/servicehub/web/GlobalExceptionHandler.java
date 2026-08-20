@@ -1,5 +1,6 @@
 package cn.servicehub.web;
 
+import cn.servicehub.iam.application.IamProjectionUnavailableException;
 import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -53,6 +54,12 @@ public class GlobalExceptionHandler {
     ResponseEntity<ApiError> forbidden(AccessDeniedException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
             .body(error(HttpStatus.FORBIDDEN, "FORBIDDEN", "You are not authorized for this operation", request));
+    }
+
+    @ExceptionHandler(IamProjectionUnavailableException.class)
+    ResponseEntity<ApiError> iamProjectionUnavailable(IamProjectionUnavailableException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+            .body(error(HttpStatus.FORBIDDEN, "FORBIDDEN", "The authenticated identity is not available for this platform", request));
     }
 
     @ExceptionHandler(Exception.class)
