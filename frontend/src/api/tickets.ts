@@ -57,6 +57,19 @@ export interface TicketTag {
   kind: TagKind
 }
 
+export type AttachmentScanState = 'RECEIVED' | 'SCANNING' | 'SCAN_PASSED' | 'QUARANTINED' | 'REJECTED' | 'SCAN_UNAVAILABLE'
+export interface TicketAttachment {
+  id: string
+  displayFileName: string
+  detectedMediaType: string
+  sizeBytes: number
+  scanState: AttachmentScanState
+  /** Download remains a server-authorized operation even when this read model is true. */
+  downloadable?: boolean
+  retentionState?: 'ACTIVE' | 'DELETE_REQUESTED' | 'RETAINED'
+}
+export interface TicketAttachmentPage { items: TicketAttachment[]; total: number }
+
 export interface IdentitySnapshot {
   iamUserId: string
   displayName: string
@@ -88,6 +101,7 @@ export interface Ticket {
   availableActions?: TicketAvailableAction[]
   participants?: TicketParticipant[]
   timeline?: TicketTimelineEvent[]
+  attachments?: TicketAttachment[]
 }
 
 export interface TicketPage {
@@ -218,6 +232,10 @@ export const ticketApi = {
 
   async listInternalComments(ticketId: string): Promise<TicketPageResult<TicketComment>> {
     return apiRequest<TicketPageResult<TicketComment>>(`/tickets/${encodeURIComponent(ticketId)}/internal-comments?page=1&pageSize=50`)
+  },
+
+  async listAttachments(ticketId: string): Promise<TicketAttachmentPage> {
+    return apiRequest<TicketAttachmentPage>(`/tickets/${encodeURIComponent(ticketId)}/attachments`)
   },
 
   async createInternalComment(ticketId: string, request: { version: number; reason: string; content: string; structuredFields?: Record<string, string> }): Promise<TicketComment> {

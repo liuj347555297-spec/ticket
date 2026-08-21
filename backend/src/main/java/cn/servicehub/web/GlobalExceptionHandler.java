@@ -6,6 +6,10 @@ import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
 import cn.servicehub.workflow.application.WorkflowConflictException;
 import cn.servicehub.workflow.application.WorkflowStateException;
+import cn.servicehub.attachment.application.AttachmentNotFoundException;
+import cn.servicehub.attachment.application.AttachmentValidationException;
+import cn.servicehub.knowledge.application.KnowledgeNotFoundException;
+import cn.servicehub.knowledge.application.KnowledgeValidationException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -58,10 +62,15 @@ public class GlobalExceptionHandler {
             .body(error(HttpStatus.CONFLICT, "WORKFLOW_CONFLICT", "Workflow action conflicts with current state", request));
     }
 
-    @ExceptionHandler(TicketNotFoundException.class)
+    @ExceptionHandler({TicketNotFoundException.class, AttachmentNotFoundException.class, KnowledgeNotFoundException.class})
     ResponseEntity<ApiError> ticketNotFound(TicketNotFoundException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
+    }
+
+    @ExceptionHandler({AttachmentValidationException.class, KnowledgeValidationException.class})
+    ResponseEntity<ApiError> attachmentRejected(RuntimeException ignored, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "CONTENT_REJECTED", "Content is not accepted", request));
     }
 
     @ExceptionHandler(AccessDeniedException.class)

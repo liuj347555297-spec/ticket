@@ -40,6 +40,10 @@ let tickets: Ticket[] = [
       { id: 'evt-002', label: '分派并受理', occurredAt: '2026-08-19T09:26:00+08:00', note: '已进入应用运维处理队列。', actor: demoAssignee, auditEventId: 'AUD-20260819-002' },
       { id: 'evt-003', label: '开始处理', occurredAt: '2026-08-19T09:28:00+08:00', note: '正在核查页面性能与相关监控。', actor: demoAssignee, auditEventId: 'AUD-20260819-003' },
     ],
+    attachments: [
+      { id: 'TKA-DEMO-001', displayFileName: 'ERP查询超时截图.png', detectedMediaType: 'image/png', sizeBytes: 82432, scanState: 'SCAN_PASSED', downloadable: true },
+      { id: 'TKA-DEMO-002', displayFileName: '浏览器诊断导出.zip', detectedMediaType: 'application/zip', sizeBytes: 312688, scanState: 'SCANNING', downloadable: false },
+    ],
   },
   {
     id: 'TKT-20260818-000380', type: 'ACCESS_REQUEST', status: 'PENDING_ACCEPTANCE', priority: 'P3',

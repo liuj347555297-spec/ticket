@@ -4,7 +4,8 @@ info:
   version: 1.0.0-draft.1
   description: |
     Vue 3 门户与 Spring Boot 单体服务的共享 v1 契约。所有业务 API 都由服务端执行对象级、流程动作和数据范围鉴权；UI 隐藏不是授权控制。
-    附件上传/下载接口保留为后续独立契约。消息仅通过受控站内信和受管通道适配器投递；不得以通用回调、任意 URL 或客户端指定收件人替代。
+    附件与知识库文档必须先进入隔离区，完成服务端白名单校验和恶意文件扫描后才可下载、索引或发布。消息仅通过受控站内信和受管通道适配器投递；不得以通用回调、任意 URL 或客户端指定收件人替代。
+    本版本不包含 AI、向量检索、自动生成、自动问答或自动处置能力。
 servers:
   - url: /api/v1
     description: 同源网关路径
@@ -23,6 +24,9 @@ tags:
   - name: Notifications
   - name: NotificationAdmin
   - name: NotificationRoutingAdmin
+  - name: Attachments
+  - name: KnowledgeBase
+  - name: KnowledgeBaseAdmin
 paths:
   /health:
     get:
@@ -1376,6 +1380,285 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/attachments:
+    get:
+      tags: [Attachments]
+      summary: 查询工单附件元数据
+      description: |
+        仅返回当前主体有权查看的工单附件元数据，不返回对象存储路径、扫描报告、原始文件名之外的敏感载荷或下载地址。
+        列表与每个附件均须逐对象授权；隔离、扫描中、拒绝和逻辑删除保留的附件不提供下载能力。
+      operationId: listTicketAttachments
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 已授权工单的附件元数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketAttachmentPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Attachments]
+      summary: 上传工单附件至隔离区
+      description: |
+        文件名、扩展名、Content-Type、路径和客户端声明的 MIME 类型均不可信。服务端以文件签名和内容复核允许类型、大小、数量和用途，
+        生成随机对象键后写入隔离区并异步扫描。上传成功只表示已受控接收，绝不表示可下载、可展示或可对外投递。
+      operationId: uploadTicketAttachment
+      x-replay-protection: subject-ticket-attachment-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TicketAttachmentUploadRequest'
+      responses:
+        '202':
+          description: 文件已进入隔离和扫描队列；扫描通过前不能下载或被知识库发布引用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AttachmentUploadAccepted'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/AttachmentRejected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /tickets/{ticketId}/attachments/{attachmentId}/content:
+    get:
+      tags: [Attachments]
+      summary: 下载已扫描通过的工单附件
+      description: |
+        每次下载同时校验工单关系、附件可见性、数据范围、当前 IAM 状态和逻辑删除保留状态；附件 ID 不能替代授权。
+        仅 SCAN_PASSED 且未逻辑删除的文件可返回。服务端固定 Content-Disposition: attachment、净化展示文件名、按服务端探测的 MIME 类型响应，
+        不信任客户端 MIME/文件名，也不提供直接对象存储 URL。
+      operationId: downloadTicketAttachmentContent
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/AttachmentId'
+      responses:
+        '200':
+          description: 附件二进制流；响应头由服务端固定生成。
+          headers:
+            Content-Disposition:
+              required: true
+              schema:
+                type: string
+              description: 固定为 attachment 并使用净化后的服务端展示名。
+            X-Content-Type-Options:
+              required: true
+              schema:
+                type: string
+                const: nosniff
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/AttachmentNotAvailable'
+  /knowledge/articles:
+    get:
+      tags: [KnowledgeBase]
+      summary: 检索已发布知识库文档
+      description: |
+        只检索当前主体按组织、服务和文档可见性有权查看的已发布版本。关键词和标签仅作为受控检索条件，
+        不执行 AI、向量检索、外部模型调用或自动生成；不得通过分页、关键词或标签枚举草稿、隔离文件或其他组织文档。
+      operationId: searchKnowledgeArticles
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: serviceCatalogItemId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: tag
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^#[^\\s#]{1,50}$'
+      responses:
+        '200':
+          description: 当前主体范围内的已发布知识摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeArticlePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /knowledge/articles/{knowledgeArticleId}:
+    get:
+      tags: [KnowledgeBase]
+      summary: 查看已发布知识库文档详情
+      description: |
+        返回当前主体有权查看的已发布冻结版本及已扫描通过的受控附件元数据；绝不返回草稿、导入源文件、扫描报告、审核意见或原始存储路径。
+        文档正文按纯文本或服务端净化后的受限富文本输出，禁止客户端解释脚本、Office 宏或任意嵌入内容。
+      operationId: getKnowledgeArticle
+      parameters:
+        - $ref: '#/components/parameters/KnowledgeArticleId'
+      responses:
+        '200':
+          description: 已授权的已发布知识文档
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeArticle'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/knowledge/import-jobs:
+    post:
+      tags: [KnowledgeBaseAdmin]
+      summary: 创建知识库文档导入任务
+      description: |
+        管理员只能向自身有管理范围的知识库导入文件。源文件始终先写隔离区并扫描；解析、文本抽取和版本草稿创建仅在扫描通过后执行。
+        不接受客户端指定存储路径、解析器、正文、发布状态、审核人或可见范围；本接口不调用 AI、向量索引或自动发布。
+      operationId: createKnowledgeImportJob
+      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-replay-protection: subject-knowledge-import-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/KnowledgeImportRequest'
+      responses:
+        '202':
+          description: 导入任务已创建，待完成扫描与解析；不代表文档可见或已发布。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeImportJob'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/AttachmentRejected'
+  /admin/knowledge/import-jobs/{knowledgeImportJobId}:
+    get:
+      tags: [KnowledgeBaseAdmin]
+      summary: 查询知识库导入任务状态
+      description: 仅任务创建者或同一管理范围的知识库管理员可见；结果仅返回脱敏状态、原因码和草稿引用，不返回原始文件、扫描报告、解析器错误详情或存储位置。
+      operationId: getKnowledgeImportJob
+      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/KnowledgeImportJobId'
+      responses:
+        '200':
+          description: 已授权导入任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeImportJob'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/knowledge/articles/{knowledgeArticleId}/versions:
+    get:
+      tags: [KnowledgeBaseAdmin]
+      summary: 查询知识库文档版本
+      description: 仅在当前管理范围内返回不可变版本元数据和生命周期状态；草稿正文、原始文件和扫描详情按最小权限另行受控，版本不得原地改写或删除。
+      operationId: listKnowledgeArticleVersions
+      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/KnowledgeArticleId'
+      responses:
+        '200':
+          description: 已授权知识文档版本列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeArticleVersionPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/knowledge/articles/{knowledgeArticleId}/versions/{knowledgeVersion}/publish-requests:
+    post:
+      tags: [KnowledgeBaseAdmin]
+      summary: 提交知识库版本发布审核
+      description: |
+        发布申请冻结指定草稿版本并创建双人复核/审批，申请人不得审核自己的版本。服务端再次验证文档范围、版本完整性、
+        所有关联文件均为 SCAN_PASSED、正文净化结果和引用一致性；任一文件未通过扫描、被隔离、拒绝、逻辑删除保留或扫描服务故障时均不得发布。
+      operationId: requestKnowledgeArticlePublication
+      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-replay-protection: subject-knowledge-version-publication-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/KnowledgeArticleId'
+        - $ref: '#/components/parameters/KnowledgeVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgePublicationRequest'
+      responses:
+        '202':
+          description: 发布审核已创建；审核通过前文档不对普通用户可见。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgePublicationRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
 components:
   securitySchemes:
     sessionCookie:
@@ -1411,6 +1694,36 @@ components:
       schema:
         type: string
         pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+    AttachmentId:
+      name: attachmentId
+      in: path
+      required: true
+      description: 附件定位符；不得据此推断下载权或对象存储键。
+      schema:
+        type: string
+        pattern: '^ATT-[A-Za-z0-9_-]{8,64}$'
+    KnowledgeArticleId:
+      name: knowledgeArticleId
+      in: path
+      required: true
+      description: 知识文档定位符；普通检索仅可查看已发布且当前主体有权查看的版本。
+      schema:
+        type: string
+        pattern: '^KB-[A-Za-z0-9_-]{8,64}$'
+    KnowledgeImportJobId:
+      name: knowledgeImportJobId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^KBIMP-[A-Za-z0-9_-]{8,64}$'
+    KnowledgeVersion:
+      name: knowledgeVersion
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
     WorkflowTaskId:
       name: taskId
       in: path
@@ -1513,6 +1826,18 @@ components:
             $ref: '#/components/schemas/ApiError'
     Conflict:
       description: 幂等键冲突、状态冲突或乐观锁冲突
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    AttachmentRejected:
+      description: 文件超过受控限制、类型不在服务端白名单内或文件内容校验失败；不返回规则细节或恶意样本信息。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    AttachmentNotAvailable:
+      description: 附件仍在扫描、处于隔离/拒绝状态、已逻辑删除保留，或扫描服务不可用导致无法安全放行。
       content:
         application/problem+json:
           schema:
@@ -3176,6 +3501,316 @@ components:
         kind:
           type: string
           enum: [STANDARD, FREE]
+    AttachmentPurpose:
+      type: string
+      enum: [TICKET_EVIDENCE, USER_FEEDBACK, HANDOVER_CHECKLIST, OTHER]
+    AttachmentScanState:
+      type: string
+      description: 扫描状态由服务端及受管防病毒服务写入；客户端不能设置或覆盖。
+      enum: [RECEIVED, SCANNING, SCAN_PASSED, QUARANTINED, REJECTED, SCAN_UNAVAILABLE]
+    AttachmentRetentionState:
+      type: string
+      description: 删除为逻辑删除保留，不执行普通 API 物理删除；保留期和法务留存策略由服务端决定。
+      enum: [ACTIVE, DELETE_REQUESTED, RETAINED]
+    TicketAttachmentUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [file, purpose]
+      x-server-enforced:
+        - ticket-object-authorization
+        - server-side-content-signature-and-allowlist-validation
+        - per-ticket-file-count-and-size-limits
+        - quarantine-storage-with-random-object-key
+        - malware-scan-before-release
+        - immutable-audit-event
+      properties:
+        file:
+          type: string
+          format: binary
+          description: 文件名、扩展名、客户端 Content-Type 和路径不可信；服务端只接受受控类型、大小与内容签名一致的文件。
+        purpose:
+          $ref: '#/components/schemas/AttachmentPurpose'
+        comment:
+          type: string
+          maxLength: 300
+          description: 可选纯文本说明；服务端净化，不作为文件路径、MIME 类型或下载名。
+    TicketAttachment:
+      type: object
+      additionalProperties: false
+      required: [id, displayFileName, detectedMediaType, sizeBytes, purpose, scanState, retentionState, uploadedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^ATT-[A-Za-z0-9_-]{8,64}$'
+        displayFileName:
+          type: string
+          maxLength: 180
+          description: 服务端生成并净化后的展示名；不含路径、控制字符或可执行内容。
+        detectedMediaType:
+          type: string
+          maxLength: 100
+          description: 服务端探测的受控 MIME 类型，不采信客户端声明。
+        sizeBytes:
+          type: integer
+          minimum: 0
+          maximum: 104857600
+        purpose:
+          $ref: '#/components/schemas/AttachmentPurpose'
+        scanState:
+          $ref: '#/components/schemas/AttachmentScanState'
+        retentionState:
+          $ref: '#/components/schemas/AttachmentRetentionState'
+        downloadable:
+          type: boolean
+          description: 仅服务端判定为 SCAN_PASSED、未逻辑删除且当前主体仍具备下载权时为 true。
+        uploadedAt:
+          type: string
+          format: date-time
+        uploader:
+          $ref: '#/components/schemas/IdentitySnapshot'
+    TicketAttachmentPage:
+      type: object
+      additionalProperties: false
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TicketAttachment'
+        total:
+          type: integer
+          minimum: 0
+    AttachmentUploadAccepted:
+      type: object
+      additionalProperties: false
+      required: [attachment, auditEventId]
+      properties:
+        attachment:
+          $ref: '#/components/schemas/TicketAttachment'
+        auditEventId:
+          type: string
+          maxLength: 128
+    KnowledgeDocumentLifecycleState:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, SUPERSEDED, REJECTED, ARCHIVED]
+    KnowledgeImportState:
+      type: string
+      enum: [RECEIVED, SCANNING, QUARANTINED, REJECTED, PARSING, DRAFT_CREATED, FAILED]
+    KnowledgeArticleSummary:
+      type: object
+      additionalProperties: false
+      required: [id, title, version, publishedAt, tags]
+      properties:
+        id:
+          type: string
+          pattern: '^KB-[A-Za-z0-9_-]{8,64}$'
+        title:
+          type: string
+          maxLength: 200
+        summary:
+          type: string
+          maxLength: 500
+          description: 服务端净化、脱敏后的检索摘要；不是导入源文件或内部审核意见。
+        version:
+          type: integer
+          minimum: 1
+        publishedAt:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Tag'
+    KnowledgeArticlePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeArticleSummary'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    KnowledgeArticle:
+      type: object
+      additionalProperties: false
+      required: [id, title, version, lifecycleState, contentFormat, content, publishedAt, tags]
+      properties:
+        id:
+          type: string
+          pattern: '^KB-[A-Za-z0-9_-]{8,64}$'
+        title:
+          type: string
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          type: string
+          const: PUBLISHED
+        contentFormat:
+          type: string
+          enum: [PLAIN_TEXT, SANITIZED_RICH_TEXT]
+        content:
+          type: string
+          maxLength: 100000
+          description: 服务端净化后的冻结正文；不得含脚本、宏、任意嵌入 URL 或未经审核的导入内容。
+        publishedAt:
+          type: string
+          format: date-time
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Tag'
+        relatedServiceCatalogItemIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 64
+        attachments:
+          type: array
+          maxItems: 20
+          description: 仅包含已扫描通过且当前主体有权查看的受控附件元数据。
+          items:
+            $ref: '#/components/schemas/TicketAttachment'
+    KnowledgeImportRequest:
+      type: object
+      additionalProperties: false
+      required: [file, title, targetOrganizationIamId]
+      x-server-enforced:
+        - knowledge-management-scope-check
+        - server-side-content-signature-and-allowlist-validation
+        - quarantine-and-malware-scan-before-parsing
+        - no-ai-vector-index-or-auto-publication
+        - immutable-audit-event
+      properties:
+        file:
+          type: string
+          format: binary
+          description: 仅允许服务端白名单的文档类型；文件名、路径、扩展名与 Content-Type 不可信。
+        title:
+          type: string
+          minLength: 2
+          maxLength: 200
+        targetOrganizationIamId:
+          type: string
+          maxLength: 128
+          description: 目标组织只作服务端管理范围校验；不是可借此扩大可见范围的授权声明。
+        serviceCatalogItemIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 64
+        tags:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Tag'
+    KnowledgeImportJob:
+      type: object
+      additionalProperties: false
+      required: [id, state, requestedAt, requester, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^KBIMP-[A-Za-z0-9_-]{8,64}$'
+        state:
+          $ref: '#/components/schemas/KnowledgeImportState'
+        reasonCode:
+          type: string
+          maxLength: 80
+          description: 脱敏失败或拒绝原因码；不返回恶意特征、扫描引擎详情、原始路径或文件内容。
+        requestedAt:
+          type: string
+          format: date-time
+        requester:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        draftArticleId:
+          type: string
+          pattern: '^KB-[A-Za-z0-9_-]{8,64}$'
+          description: 仅在 DRAFT_CREATED 后返回，草稿仍需权限与发布审核。
+        draftVersion:
+          type: integer
+          minimum: 1
+        auditEventId:
+          type: string
+          maxLength: 128
+    KnowledgeArticleVersion:
+      type: object
+      additionalProperties: false
+      required: [version, lifecycleState, createdAt, creator, sourceScanState, auditEventId]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          $ref: '#/components/schemas/KnowledgeDocumentLifecycleState'
+        createdAt:
+          type: string
+          format: date-time
+        creator:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        sourceScanState:
+          $ref: '#/components/schemas/AttachmentScanState'
+        auditEventId:
+          type: string
+          maxLength: 128
+    KnowledgeArticleVersionPage:
+      type: object
+      additionalProperties: false
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/KnowledgeArticleVersion'
+        total:
+          type: integer
+          minimum: 0
+    KnowledgePublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: 发布申请理由；审核策略、审核人、可见范围和最终状态只能由服务端计算。
+    KnowledgePublicationRequestResult:
+      type: object
+      additionalProperties: false
+      required: [articleId, version, lifecycleState, approvalTaskId, auditEventId]
+      properties:
+        articleId:
+          type: string
+          pattern: '^KB-[A-Za-z0-9_-]{8,64}$'
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          type: string
+          const: PENDING_REVIEW
+        approvalTaskId:
+          type: string
+          maxLength: 128
+        auditEventId:
+          type: string
+          maxLength: 128
     TicketCreateRequest:
       type: object
       additionalProperties: false
@@ -3736,7 +4371,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, ATTACHMENT_REJECTED, ATTACHMENT_NOT_AVAILABLE, ATTACHMENT_SCAN_UNAVAILABLE, KNOWLEDGE_IMPORT_REJECTED, KNOWLEDGE_DOCUMENT_NOT_AVAILABLE, KNOWLEDGE_PUBLICATION_NOT_ALLOWED, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500

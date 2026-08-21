@@ -18,6 +18,10 @@ public class DefaultObjectAuthorizationService implements ObjectAuthorizationSer
 
     @Override
     public void requireAuthorized(CurrentUser user, ObjectAuthorizationRequest request) {
+        if ("knowledge-document".equals(request.resourceType())) {
+            if (hasAnyAuthority(user, Set.of("ROLE_SERVICE_MANAGER", "ROLE_PLATFORM_ADMIN"))) return;
+            throw new AccessDeniedException("Knowledge administration is not authorized");
+        }
         if (!"ticket".equals(request.resourceType())) {
             throw new AccessDeniedException("Unsupported protected resource");
         }
@@ -28,7 +32,7 @@ public class DefaultObjectAuthorizationService implements ObjectAuthorizationSer
             }
             throw new AccessDeniedException("Ticket creation is not authorized");
         }
-        if (request.action() == ObjectAction.READ && (hasAnyAuthority(user, TICKET_READ_ALL_ROLES)
+        if ((request.action() == ObjectAction.READ || request.action() == ObjectAction.DOWNLOAD_ATTACHMENT) && (hasAnyAuthority(user, TICKET_READ_ALL_ROLES)
             || user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId")))) {
             return;
         }
@@ -36,10 +40,10 @@ public class DefaultObjectAuthorizationService implements ObjectAuthorizationSer
             || user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId")))) {
             return;
         }
-        if ((request.action() == ObjectAction.UPDATE || request.action() == ObjectAction.ASSIGN
+        if ((request.action() == ObjectAction.UPDATE || request.action() == ObjectAction.UPLOAD_ATTACHMENT || request.action() == ObjectAction.ASSIGN
             || request.action() == ObjectAction.TRANSFER || request.action() == ObjectAction.APPROVE)
             && (hasAnyAuthority(user, TICKET_MUTATION_ROLES)
-                || (request.action() == ObjectAction.UPDATE && user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId"))))) {
+                || ((request.action() == ObjectAction.UPDATE || request.action() == ObjectAction.UPLOAD_ATTACHMENT) && user.iamUserId().equals(request.serverResolvedContext().get("requesterIamUserId"))))) {
             return;
         }
         throw new AccessDeniedException("Ticket action is not authorized");

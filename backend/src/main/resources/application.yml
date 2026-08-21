@@ -19,6 +19,11 @@ spring:
   mvc:
     problemdetails:
       enabled: false
+  servlet:
+    multipart:
+      # Transport layer limit mirrors the domain limit; controllers still enforce count/type/content checks.
+      max-file-size: 10MB
+      max-request-size: 11MB
 flowable:
   # The workflow port is backed by a real Flowable 7 engine in every profile.  The async executor
   # is deliberately disabled until job locking/cluster topology is part of the deployment design.
@@ -30,6 +35,11 @@ server:
     include-stacktrace: never
     include-binding-errors: never
 servicehub:
+  attachment:
+    # Development-only location. Production supplies a mounted, non-web-accessible volume or an object-storage adapter.
+    storage-root: ${SERVICEHUB_ATTACHMENT_STORAGE_ROOT:${java.io.tmpdir}/servicehub-attachments}
+    max-file-size-bytes: 10485760
+    max-files-per-ticket: 10
   security:
     # Must be replaced by the internal portal origin for each deployment environment.
     allowed-origins:
