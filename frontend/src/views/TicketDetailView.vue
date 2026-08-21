@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { ApiError } from '@/api/client'
-import { ticketApi, type AttachmentScanState, type Ticket, type TicketActionCode, type TicketAttachment, type TicketAvailableAction, type TicketComment, type TicketLifecycleAction, type TicketStatus, type TicketTimelineEvent, type TicketType, type TicketWorkAction } from '@/api/tickets'
+import { ticketApi, type AttachmentScanState, type Ticket, type TicketActionCode, type TicketAttachment, type TicketAvailableAction, type TicketComment, type TicketLifecycleAction, type TicketSla, type TicketSlaResponse, type TicketStatus, type TicketTimelineEvent, type TicketType, type TicketWorkAction } from '@/api/tickets'
 import { notificationApi, type TicketNotificationSummary } from '@/api/notifications'
 
 const route = useRoute()
@@ -46,6 +46,41 @@ const timeline = computed<TicketTimelineEvent[]>(() => {
 })
 
 function formatFullTime(value: string): string { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(value)) }
+function slaRemaining(minutes: number | undefined): string {
+  if (minutes === undefined) return '服务端未返回'
+  if (minutes < 0) return `已超时 ${Math.abs(minutes)} 分钟`
+  if (minutes === 0) return '已达到目标'
+  return minutes < 60 ? `剩余 ${minutes} 分钟` : `剩余 ${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+}
+function slaRiskLabel(risk: 'NORMAL' | 'AT_RISK' | 'BREACHED'): string { return risk === 'NORMAL' ? '正常' : risk === 'AT_RISK' ? '临近违约' : '已违约' }
+function mapTicketSla(status: TicketSlaResponse): TicketSla {
+  if (!('targets' in status)) {
+    return {
+      policyName: status.policyNameSnapshot,
+      responseTargetAt: status.responseDueAt,
+      resolutionTargetAt: status.resolutionDueAt,
+      paused: Boolean(status.pauseStartedAt),
+      pausedAt: status.pauseStartedAt,
+      pausedMinutes: Math.floor(status.pausedSeconds / 60),
+      riskLevel: status.riskLevel === 'ON_TRACK' ? 'NORMAL' : status.riskLevel,
+      calculatedAt: status.calculatedAt,
+    }
+  }
+  const response = status.targets.find((target) => target.targetType === 'FIRST_RESPONSE')
+  const resolution = status.targets.find((target) => target.targetType === 'RESOLUTION')
+  const states = status.targets.map((target) => target.state)
+  const riskLevel = states.includes('BREACHED') ? 'BREACHED' : states.includes('AT_RISK') ? 'AT_RISK' : 'NORMAL'
+  return {
+    policyName: `${status.policySnapshot.policyId} · v${status.policySnapshot.policyVersion}`,
+    responseTargetAt: response?.targetAt,
+    resolutionTargetAt: resolution?.targetAt,
+    responseRemainingMinutes: response?.businessMinutesRemaining,
+    resolutionRemainingMinutes: resolution?.businessMinutesRemaining,
+    paused: status.paused,
+    riskLevel,
+    calculatedAt: status.calculatedAt,
+  }
+}
 function participantRole(role: 'PRIMARY' | 'COLLABORATOR'): string { return role === 'PRIMARY' ? '主办' : '协办' }
 const attachmentScanLabel: Record<AttachmentScanState, string> = { RECEIVED: '已接收', SCANNING: '扫描中', SCAN_PASSED: '扫描通过', QUARANTINED: '已隔离', REJECTED: '扫描拒绝', SCAN_UNAVAILABLE: '扫描不可用' }
 function attachmentSize(bytes: number): string { return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB` }
@@ -82,10 +117,14 @@ async function submitAction(): Promise<void> {
 }
 async function loadComments(ticketId: string, dataSource: 'api' | 'demo'): Promise<void> { if (dataSource === 'demo') { comments.value = demoComments; return }; try { comments.value = (await ticketApi.listInternalComments(ticketId)).items } catch { comments.value = [] } }
 async function loadAttachments(ticketId: string, dataSource: 'api' | 'demo'): Promise<void> { if (dataSource === 'demo') { attachments.value = ticket.value?.attachments ?? []; return }; try { attachments.value = (await ticketApi.listAttachments(ticketId)).items } catch { attachments.value = [] } }
+async function loadSla(ticketId: string, dataSource: 'api' | 'demo'): Promise<void> {
+  if (!ticket.value || dataSource === 'demo') return
+  try { ticket.value = { ...ticket.value, sla: mapTicketSla(await ticketApi.getSla(ticketId)) } } catch { /* SLA may be omitted when unavailable or not separately authorized. */ }
+}
 async function loadTicket(): Promise<void> {
   const ticketId = String(route.params.ticketId ?? '')
   loading.value = true; errorMessage.value = ''; selectedAction.value = null
-  try { const result = await ticketApi.get(ticketId); ticket.value = result.data; source.value = result.source; await loadComments(ticketId, result.source); await loadAttachments(ticketId, result.source); try { notificationSummary.value = (await notificationApi.ticketSummary(ticketId)).data } catch { notificationSummary.value = null } } catch (error) { ticket.value = null; comments.value = []; attachments.value = []; notificationSummary.value = null; errorMessage.value = error instanceof ApiError ? error.message : '无法加载此工单，可能已不存在或无权访问。' } finally { loading.value = false }
+  try { const result = await ticketApi.get(ticketId); ticket.value = result.data; source.value = result.source; await Promise.all([loadComments(ticketId, result.source), loadAttachments(ticketId, result.source), loadSla(ticketId, result.source)]); try { notificationSummary.value = (await notificationApi.ticketSummary(ticketId)).data } catch { notificationSummary.value = null } } catch (error) { ticket.value = null; comments.value = []; attachments.value = []; notificationSummary.value = null; errorMessage.value = error instanceof ApiError ? error.message : '无法加载此工单，可能已不存在或无权访问。' } finally { loading.value = false }
 }
 onMounted(loadTicket)
 watch(() => route.params.ticketId, loadTicket)
@@ -101,7 +140,7 @@ watch(() => route.params.ticketId, loadTicket)
     <section v-if="notificationSummary" class="ticket-notification-summary" :class="{ 'ticket-notification-summary--unread': notificationSummary.unreadCount > 0 }"><span aria-hidden="true">♢</span><div><b>{{ notificationSummary.unreadCount ? `本工单有 ${notificationSummary.unreadCount} 条未读通知` : '本工单暂无未读通知' }}</b><small v-if="notificationSummary.latest">最近：{{ notificationSummary.latest.title }} · {{ formatFullTime(notificationSummary.latest.createdAt) }}</small></div><RouterLink to="/notifications">查看消息中心</RouterLink></section>
     <div class="ticket-detail-layout">
       <section class="panel detail-panel"><div class="panel-header"><div><h3>问题描述</h3><p>提交人填写的结构化信息与补充说明。</p></div></div><p class="ticket-description">{{ ticket.description || '暂无补充说明。' }}</p><dl class="detail-definition"><div><dt>服务目录</dt><dd>{{ ticket.serviceCatalogItem.name }}</dd></div><div><dt>创建时间</dt><dd>{{ formatFullTime(ticket.createdAt) }}</dd></div><div><dt>当前版本</dt><dd>v{{ ticket.version }}（写操作必须校验）</dd></div></dl></section>
-      <aside class="detail-sidebar"><section class="panel detail-panel"><div class="panel-header"><div><h3>处理信息</h3><p>处理关系与状态以服务端为准。</p></div></div><dl class="detail-definition"><div><dt>当前状态</dt><dd>{{ statusNames[ticket.status] }}</dd></div><div><dt>当前处理人</dt><dd>{{ ticket.assignee?.displayName ?? '待后端分派' }}</dd></div><div><dt>处理组织</dt><dd>{{ ticket.assignee?.organizationName ?? '—' }}</dd></div></dl></section></aside>
+      <aside class="detail-sidebar"><section class="panel detail-panel"><div class="panel-header"><div><h3>处理信息</h3><p>处理关系与状态以服务端为准。</p></div></div><dl class="detail-definition"><div><dt>当前状态</dt><dd>{{ statusNames[ticket.status] }}</dd></div><div><dt>当前处理人</dt><dd>{{ ticket.assignee?.displayName ?? '待后端分派' }}</dd></div><div><dt>处理组织</dt><dd>{{ ticket.assignee?.organizationName ?? '—' }}</dd></div></dl></section><section class="panel detail-panel sla-ticket-panel"><div class="panel-header"><div><h3>SLA 时效</h3><p>目标、暂停和风险由服务端计算，前端不自行倒计时。</p></div></div><template v-if="ticket.sla"><div class="sla-ticket-policy"><b>{{ ticket.sla.policyName }}</b><span class="tag" :class="ticket.sla.riskLevel === 'NORMAL' ? 'tag--green' : ticket.sla.riskLevel === 'AT_RISK' ? 'tag--orange' : 'tag--red'">{{ slaRiskLabel(ticket.sla.riskLevel) }}</span></div><dl class="detail-definition"><div><dt>响应目标</dt><dd>{{ ticket.sla.responseTargetAt ? formatFullTime(ticket.sla.responseTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.responseRemainingMinutes) }}</small></dd></div><div><dt>解决目标</dt><dd>{{ ticket.sla.resolutionTargetAt ? formatFullTime(ticket.sla.resolutionTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.resolutionRemainingMinutes) }}</small></dd></div><div><dt>计时状态</dt><dd>{{ ticket.sla.paused ? '已暂停（已审批）' : '计时中' }}<small v-if="ticket.sla.pausedMinutes">累计暂停 {{ ticket.sla.pausedMinutes }} 分钟</small></dd></div><div><dt>最近计算</dt><dd>{{ formatFullTime(ticket.sla.calculatedAt) }}</dd></div></dl></template><p v-else class="workflow-unavailable">当前未返回可查看的 SLA 明细；工单是否可见及 SLA 数据范围由服务端控制。</p></section></aside>
       <section class="panel detail-panel workflow-panel"><div class="panel-header"><div><h3>流程动作</h3><p>仅显示服务端当前返回的可用动作；页面不自行推断权限。</p></div></div><div v-if="availableActions.length" class="workflow-action-groups"><div><small>生命周期</small><div class="action-row"><button v-for="action in lifecycleActions" :key="action.code" class="button button--secondary button--compact" type="button" :disabled="Boolean(action.disabledReason)" :title="action.disabledReason" @click="openAction(action)">{{ action.label ?? actionLabels[action.code] }}</button><span v-if="!lifecycleActions.length" class="empty-inline">当前无可用生命周期动作</span></div></div><div><small>多人协作</small><div class="action-row"><button v-for="action in workActions" :key="action.code" class="button button--secondary button--compact" type="button" :disabled="Boolean(action.disabledReason)" :title="action.disabledReason" @click="openAction(action)">{{ action.label ?? actionLabels[action.code] }}</button><button v-if="canComment" class="button button--secondary button--compact" type="button" @click="openAction({ code: 'INTERNAL_COMMENT', label: '内部评论' })">内部评论</button><span v-if="!workActions.length && !canComment" class="empty-inline">当前无可用协作动作</span></div></div></div><p v-else class="workflow-unavailable">后端尚未提供工单的可用动作读模型，已隐藏全部写操作以避免前端越权。</p></section>
       <section class="panel detail-panel"><div class="panel-header"><div><h3>流程时间线</h3><p>正式环境以不可篡改审计事件为准。</p></div></div><ol class="ticket-timeline"><li v-for="item in timeline" :key="item.id"><span></span><div><b>{{ item.label }}</b><small>{{ formatFullTime(item.occurredAt) }}<template v-if="item.actor"> · {{ item.actor.displayName }}</template></small><p v-if="item.note">{{ item.note }}</p><em v-if="item.auditEventId">审计：{{ item.auditEventId }}</em></div></li></ol></section>
       <section class="panel detail-panel"><div class="panel-header"><div><h3>协作人员</h3><p>主办/协办关系由服务端协作规则返回。</p></div></div><ul v-if="participants.length" class="participant-list"><li v-for="participant in participants" :key="`${participant.role}-${participant.identity.iamUserId}`"><span class="participant-avatar">{{ participant.identity.displayName.slice(0, 1) }}</span><div><b>{{ participant.identity.displayName }}</b><small>{{ participant.identity.organizationName }} · {{ participant.identity.positionName ?? '—' }}</small></div><span class="role-pill">{{ participantRole(participant.role) }}</span></li></ul><p v-else class="workflow-unavailable">暂未返回协作人员。</p></section>

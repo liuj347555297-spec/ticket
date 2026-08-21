@@ -156,12 +156,12 @@ public class MySqlTicketRepository implements TicketRepository {
         jdbcTemplate.update("""
             INSERT INTO ticket (
               id, type, status, priority, title, description, structured_fields, tags, related_configuration_item_ids,
-              requester_iam_user_id, requester_display_name, requester_organization_name, requester_position_name,
+              requester_iam_user_id, requester_display_name, requester_organization_id, requester_organization_name, requester_position_name,
               requester_captured_at, service_catalog_item_id, service_catalog_item_name, created_at, updated_at, version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, ticket.id(), ticket.type().name(), ticket.status().name(), ticket.priority().name(), ticket.title(), ticket.description(),
             asJson(ticket.structuredFields()), asJson(ticket.tags()), asJson(ticket.relatedConfigurationItemIds()),
-            ticket.requester().iamUserId(), ticket.requester().displayName(), ticket.requester().organizationName(),
+            ticket.requester().iamUserId(), ticket.requester().displayName(), ticket.requester().organizationId(), ticket.requester().organizationName(),
             ticket.requester().positionName(), Timestamp.from(ticket.requester().capturedAt()), ticket.serviceCatalogItem().id(),
             ticket.serviceCatalogItem().name(), Timestamp.from(ticket.createdAt()), Timestamp.from(ticket.updatedAt()), ticket.version());
     }
@@ -183,7 +183,7 @@ public class MySqlTicketRepository implements TicketRepository {
                 objectMapper.readValue(resultSet.getString("tags"), new TypeReference<List<TicketTag>>() { }),
                 objectMapper.readValue(resultSet.getString("related_configuration_item_ids"), new TypeReference<List<String>>() { }),
                 new IdentitySnapshot(resultSet.getString("requester_iam_user_id"), resultSet.getString("requester_display_name"),
-                    resultSet.getString("requester_organization_name"), resultSet.getString("requester_position_name"),
+                    resultSet.getString("requester_organization_id"), resultSet.getString("requester_organization_name"), resultSet.getString("requester_position_name"),
                     resultSet.getTimestamp("requester_captured_at").toInstant()),
                 new ServiceCatalogSummary(resultSet.getString("service_catalog_item_id"), resultSet.getString("service_catalog_item_name")),
                 resultSet.getTimestamp("created_at").toInstant(), resultSet.getTimestamp("updated_at").toInstant(), resultSet.getLong("version"));

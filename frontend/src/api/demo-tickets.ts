@@ -24,6 +24,17 @@ let tickets: Ticket[] = [
     serviceCatalogItem: { id: 'CAT-ERP-PERFORMANCE', name: '业务系统 - 页面性能问题' },
     tags: [{ name: '#ERP', kind: 'STANDARD' }, { name: '#采购订单', kind: 'FREE' }, { name: '#页面卡顿', kind: 'STANDARD' }],
     createdAt: '2026-08-19T09:12:00+08:00', updatedAt: '2026-08-19T09:28:00+08:00', version: 3,
+    sla: {
+      policyName: 'P2 一般故障 / 工作日服务日历',
+      responseTargetAt: '2026-08-19T09:42:00+08:00',
+      resolutionTargetAt: '2026-08-19T17:12:00+08:00',
+      responseRemainingMinutes: 0,
+      resolutionRemainingMinutes: 38,
+      paused: false,
+      pausedMinutes: 0,
+      riskLevel: 'AT_RISK',
+      calculatedAt: '2026-08-19T16:34:00+08:00',
+    },
     availableActions: [
       { code: 'REQUEST_USER_FEEDBACK', label: '待用户反馈' }, { code: 'RESOLVE', label: '解决' },
       { code: 'HOLD', label: '挂起' }, { code: 'ESCALATE', label: '升级' }, { code: 'TRANSFER', label: '转办', requiresTarget: true },

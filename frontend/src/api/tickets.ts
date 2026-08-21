@@ -70,6 +70,57 @@ export interface TicketAttachment {
 }
 export interface TicketAttachmentPage { items: TicketAttachment[]; total: number }
 
+export type SlaRiskLevel = 'NORMAL' | 'AT_RISK' | 'BREACHED'
+
+/**
+ * SLA is a server-calculated read model. It is omitted entirely when the current
+ * identity is not allowed to view the ticket or its SLA details.
+ */
+export interface TicketSla {
+  policyName: string
+  responseTargetAt?: string
+  resolutionTargetAt?: string
+  responseRemainingMinutes?: number
+  resolutionRemainingMinutes?: number
+  paused: boolean
+  pausedAt?: string
+  pausedMinutes?: number
+  riskLevel: SlaRiskLevel
+  calculatedAt: string
+}
+
+/** Wire model for GET /tickets/{ticketId}/sla. Never accept this model from a write form. */
+export interface TicketSlaStatusResponse {
+  ticketId: string
+  policySnapshot: { policyId: string; policyVersion: number; workCalendarId: string; workCalendarVersion: number }
+  calculationTimeZone: string
+  calculatedAt: string
+  paused: boolean
+  pauseReasonCode?: string
+  targets: Array<{
+    targetType: 'FIRST_RESPONSE' | 'RESOLUTION'
+    state: 'ON_TRACK' | 'AT_RISK' | 'BREACHED' | 'PAUSED' | 'NOT_APPLICABLE'
+    targetAt: string
+    businessMinutesRemaining: number
+    breachedAt?: string
+  }>
+}
+
+/** Temporary compatibility read model for the first Spring Boot SLA implementation. */
+export interface LegacyTicketSlaStatusResponse {
+  ticketId: string
+  policyId: string
+  policyNameSnapshot: string
+  calendarKeySnapshot: string
+  responseDueAt: string
+  resolutionDueAt: string
+  pausedSeconds: number
+  pauseStartedAt?: string
+  riskLevel: 'ON_TRACK' | 'AT_RISK' | 'BREACHED'
+  calculatedAt: string
+}
+export type TicketSlaResponse = TicketSlaStatusResponse | LegacyTicketSlaStatusResponse
+
 export interface IdentitySnapshot {
   iamUserId: string
   displayName: string
@@ -102,6 +153,7 @@ export interface Ticket {
   participants?: TicketParticipant[]
   timeline?: TicketTimelineEvent[]
   attachments?: TicketAttachment[]
+  sla?: TicketSla
 }
 
 export interface TicketPage {
@@ -236,6 +288,10 @@ export const ticketApi = {
 
   async listAttachments(ticketId: string): Promise<TicketAttachmentPage> {
     return apiRequest<TicketAttachmentPage>(`/tickets/${encodeURIComponent(ticketId)}/attachments`)
+  },
+
+  async getSla(ticketId: string): Promise<TicketSlaResponse> {
+    return apiRequest<TicketSlaResponse>(`/tickets/${encodeURIComponent(ticketId)}/sla`)
   },
 
   async createInternalComment(ticketId: string, request: { version: number; reason: string; content: string; structuredFields?: Record<string, string> }): Promise<TicketComment> {

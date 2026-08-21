@@ -25,7 +25,7 @@ public class CurrentUserIdentitySnapshotResolver implements IdentitySnapshotReso
         IamUserProjection projection = iamProjectionService.requireActiveProjection(user.iamUserId());
         String primaryPosition = projection.positions().stream().filter(position -> position.primary())
             .findFirst().map(position -> position.name()).orElse(null);
-        return new IdentitySnapshot(projection.iamUserId(), projection.displayName(), projection.organization().name(),
+        return new IdentitySnapshot(projection.iamUserId(), projection.displayName(), projection.organization().iamOrganizationId(), projection.organization().name(),
             primaryPosition, clock.instant());
     }
 }

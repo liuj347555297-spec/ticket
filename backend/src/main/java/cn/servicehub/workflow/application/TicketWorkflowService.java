@@ -4,6 +4,7 @@ import cn.servicehub.audit.AuditEvent;
 import cn.servicehub.audit.AuditEventPublisher;
 import cn.servicehub.iam.domain.IamUserProjectionRepository;
 import cn.servicehub.notification.application.NotificationService;
+import cn.servicehub.sla.application.SlaService;
 import cn.servicehub.security.CurrentUser;
 import cn.servicehub.security.CurrentUserProvider;
 import cn.servicehub.security.ObjectAction;
@@ -45,14 +46,15 @@ public class TicketWorkflowService {
     private final IamUserProjectionRepository iamUsers;
     private final AuditEventPublisher audit;
     private final NotificationService notifications;
+    private final SlaService slaService;
     private final Clock clock = Clock.systemUTC();
 
     public TicketWorkflowService(TicketWorkflowRepository workflowRepository, TicketRepository ticketRepository,
                                  WorkflowEnginePort workflowEngine, CurrentUserProvider currentUserProvider,
                                  ObjectAuthorizationService authorizationService, IamUserProjectionRepository iamUsers,
-                                 AuditEventPublisher audit, NotificationService notifications) {
+                                 AuditEventPublisher audit, NotificationService notifications, SlaService slaService) {
         this.workflowRepository = workflowRepository; this.ticketRepository = ticketRepository; this.workflowEngine = workflowEngine;
-        this.currentUserProvider = currentUserProvider; this.authorizationService = authorizationService; this.iamUsers = iamUsers; this.audit = audit; this.notifications = notifications;
+        this.currentUserProvider = currentUserProvider; this.authorizationService = authorizationService; this.iamUsers = iamUsers; this.audit = audit; this.notifications = notifications; this.slaService = slaService;
     }
 
     @Transactional
@@ -86,6 +88,7 @@ public class TicketWorkflowService {
             case REOPEN -> reopen(ticket, instance, actor, now);
             default -> advanceLifecycle(ticket, instance, actor, command, now);
         };
+        slaService.onTicketStateChanged(ticket, result);
         record(actor, "WORKFLOW_" + command.action().name(), ticketId, Map.of("from", ticket.status().name(), "to", result.status().name()));
         notifications.workflowAction(result, command.action().name(), actor.iamUserId(), notificationTarget(command));
         return result;

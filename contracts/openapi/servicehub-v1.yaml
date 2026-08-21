@@ -27,6 +27,10 @@ tags:
   - name: Attachments
   - name: KnowledgeBase
   - name: KnowledgeBaseAdmin
+  - name: Sla
+  - name: SlaAdmin
+  - name: OperationsReporting
+  - name: OperationsReportingAdmin
 paths:
   /health:
     get:
@@ -1659,6 +1663,524 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/sla:
+    get:
+      tags: [Sla]
+      summary: 查询当前工单的服务端 SLA 目标与风险
+      description: |
+        仅对当前主体有权查看的工单返回 SLA 摘要。目标、暂停、风险和违约均以服务端已发布策略、工作日历和可信工单事件计算；
+        不接受或相信客户端提交的截止时间、暂停时长、优先级、队列、组织或策略版本。历史快照只用于追溯，当前对象授权和数据范围仍须实时校验。
+      operationId: getTicketSla
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 当前授权范围内的 SLA 目标与计算摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketSlaStatus'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/sla/policies:
+    get:
+      tags: [SlaAdmin]
+      summary: 查询 SLA 策略摘要
+      description: |
+        仅 SLA 管理员、平台管理员或审计员可在其管理组织/服务范围内查询策略。服务端按数据范围过滤草稿、历史版本与引用关系，
+        不得通过策略 ID、组织筛选、分页或规则条件枚举其他范围的配置。响应不包含任意表达式、脚本或可执行路由。
+      operationId: listSlaPolicies
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: lifecycleState
+          in: query
+          schema:
+            $ref: '#/components/schemas/SlaConfigurationLifecycleState'
+      responses:
+        '200':
+          description: 已按配置管理范围过滤的策略分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPolicyPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [SlaAdmin]
+      summary: 创建 SLA 策略初始草稿
+      description: |
+        仅 SLA 管理员或平台管理员可在自身管理范围创建草稿。策略匹配条件、优先级、工作日历引用、暂停条件和目标只能使用服务端白名单，
+        不得提交目标时间、工单状态、队列、人员、组织外范围、脚本、表达式、自动升级动作或直接发布状态。创建仅形成草稿，不自动升级或影响既有工单。
+      operationId: createSlaPolicyDraft
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-policy-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaPolicyDraftRequest'
+      responses:
+        '201':
+          description: 初始 SLA 策略草稿已创建，尚未生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/sla/policies/{slaPolicyId}:
+    get:
+      tags: [SlaAdmin]
+      summary: 获取 SLA 策略及冻结版本摘要
+      description: 策略 ID 仅作定位；服务端按当前配置管理范围逐对象授权。审计员只读，不能因读取而获得发布或修改权限。
+      operationId: getSlaPolicy
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/SlaPolicyId'
+      responses:
+        '200':
+          description: 已授权 SLA 策略
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/sla/policies/{slaPolicyId}/versions:
+    post:
+      tags: [SlaAdmin]
+      summary: 创建 SLA 策略的新草稿版本
+      description: |
+        已发布版本不可原地修改。服务端以当前最后有效版本为基线创建一个带新版本号的草稿，并校验管理范围、乐观锁、已发布工作日历版本、
+        条件白名单及优先级冲突；不接受客户端设置历史版本、发布状态、审核人、现有工单的 SLA 时间或自动升级。所有版本创建写入追加式审计链。
+      operationId: createSlaPolicyDraftVersion
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-policy-version-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SlaPolicyId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaPolicyDraftRequest'
+      responses:
+        '201':
+          description: 新策略草稿版本已创建，尚未生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPolicy'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/sla/policies/{slaPolicyId}/versions/{slaPolicyVersion}/publish-requests:
+    post:
+      tags: [SlaAdmin]
+      summary: 提交 SLA 策略版本发布审核
+      description: |
+        发布请求冻结草稿版本，执行双人复核和职责分离，申请人不得审批自己创建的版本。服务端再次校验范围、工作日历版本、暂停条件、
+        重叠/优先级冲突和对新工单的影响预览；未获批前不生效，已存在工单保留命中的策略快照，当前版本不自动升级或改写历史计算。
+      operationId: requestSlaPolicyPublication
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-policy-publication-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SlaPolicyId'
+        - $ref: '#/components/parameters/SlaPolicyVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaPublicationRequest'
+      responses:
+        '202':
+          description: 版本发布审核已创建；审核通过前不会改变 SLA 计算。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPublicationRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/sla/work-calendars:
+    get:
+      tags: [SlaAdmin]
+      summary: 查询 SLA 工作日历摘要
+      description: 工作日历仅以受控时区、工作时段和节假日定义业务时间；服务端按配置数据范围过滤，禁止通过时区、组织、分页或 ID 枚举其他范围配置。
+      operationId: listSlaWorkCalendars
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 已授权工作日历分页结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaWorkCalendarPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [SlaAdmin]
+      summary: 创建工作日历初始草稿
+      description: 仅 SLA 管理员或平台管理员可创建。时区必须来自服务端允许的 IANA 时区列表；工作时段和节假日使用结构化白名单，不执行客户端表达式、脚本或任意日期计算。
+      operationId: createSlaWorkCalendarDraft
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-calendar-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaWorkCalendarDraftRequest'
+      responses:
+        '201':
+          description: 工作日历草稿已创建，尚未用于 SLA 计算
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaWorkCalendar'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/sla/work-calendars/{slaWorkCalendarId}/versions:
+    post:
+      tags: [SlaAdmin]
+      summary: 创建工作日历的新草稿版本
+      description: 已发布日历不可原地修改。新版本须双人复核后才可被策略引用；既有工单保留策略与日历版本快照，不能因后续日历修改重写历史 SLA。
+      operationId: createSlaWorkCalendarDraftVersion
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-calendar-version-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SlaWorkCalendarId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaWorkCalendarDraftRequest'
+      responses:
+        '201':
+          description: 新工作日历草稿版本已创建
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaWorkCalendar'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/sla/work-calendars/{slaWorkCalendarId}/versions/{slaWorkCalendarVersion}/publish-requests:
+    post:
+      tags: [SlaAdmin]
+      summary: 提交工作日历版本发布审核
+      description: 发布审核冻结版本并检查时区、重叠时段、节假日及被引用策略影响；申请人与审批人必须职责分离，发布行为和影响摘要均写入审计。
+      operationId: requestSlaWorkCalendarPublication
+      x-required-platform-roles: [SLA_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-sla-calendar-publication-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SlaWorkCalendarId'
+        - $ref: '#/components/parameters/SlaWorkCalendarVersion'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlaPublicationRequest'
+      responses:
+        '202':
+          description: 日历发布审核已创建；审核通过前不会生效。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SlaPublicationRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /reports/operations/kpis:
+    get:
+      tags: [OperationsReporting]
+      summary: 查询运营 KPI
+      description: |
+        返回服务端按当前 IAM 数据范围聚合的工单量、解决时长、SLA 达标率等指标及口径。所有组织、服务、队列和时间筛选先经服务端授权裁剪；
+        跨组织或超过服务端阈值的大范围查询必须完成二次鉴权并写入审计，前端筛选和隐藏字段不能替代此控制。
+      operationId: getOperationsKpis
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportTimeZone'
+        - $ref: '#/components/parameters/ReportOrganizationIamId'
+        - $ref: '#/components/parameters/ReportIncludeDescendants'
+        - $ref: '#/components/parameters/ReportPurpose'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+      responses:
+        '200':
+          description: 已授权 KPI 与数据新鲜度摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsKpiReport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /reports/operations/trends:
+    get:
+      tags: [OperationsReporting]
+      summary: 查询运营趋势
+      description: 趋势粒度、时间范围和时区均由受控参数决定；服务端返回口径、缺失数据标识和延迟，不以零值伪造尚未完成汇总的数据。
+      operationId: getOperationsTrends
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportTimeZone'
+        - $ref: '#/components/parameters/ReportOrganizationIamId'
+        - $ref: '#/components/parameters/ReportIncludeDescendants'
+        - $ref: '#/components/parameters/ReportPurpose'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [HOUR, DAY, WEEK, MONTH]
+            default: DAY
+      responses:
+        '200':
+          description: 已授权趋势点及数据完整性摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsTrendReport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /reports/operations/queue-load:
+    get:
+      tags: [OperationsReporting]
+      summary: 查询队列负荷
+      description: 队列负荷仅统计当前主体有权查看的队列和组织范围；响应不泄露无权队列、个人绩效或隐私字段。大范围和跨组织查看必须二次鉴权与审计。
+      operationId: getOperationsQueueLoad
+      parameters:
+        - $ref: '#/components/parameters/ReportFrom'
+        - $ref: '#/components/parameters/ReportTo'
+        - $ref: '#/components/parameters/ReportTimeZone'
+        - $ref: '#/components/parameters/ReportOrganizationIamId'
+        - $ref: '#/components/parameters/ReportIncludeDescendants'
+        - $ref: '#/components/parameters/ReportPurpose'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+      responses:
+        '200':
+          description: 已授权范围的队列负荷与刷新状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsQueueLoadReport'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /reports/operations/refresh-status:
+    get:
+      tags: [OperationsReporting]
+      summary: 查询运营汇总刷新状态
+      description: 仅返回当前数据范围内汇总表的新鲜度、延迟和缺失分区摘要；不返回数据库作业、表名、SQL、执行节点或其他组织的运行细节。
+      operationId: getOperationsReportRefreshStatus
+      parameters:
+        - $ref: '#/components/parameters/ReportOrganizationIamId'
+        - $ref: '#/components/parameters/ReportPurpose'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+      responses:
+        '200':
+          description: 已授权汇总刷新状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportRefreshStatus'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /reports/operations/exports:
+    post:
+      tags: [OperationsReportingAdmin]
+      summary: 创建受控运营报表导出任务
+      description: |
+        导出始终异步执行，必须由服务端重新计算数据范围、字段白名单、行数/时间范围上限和脱敏/水印策略。任何导出、跨组织或大范围查询均须二次鉴权、
+        明确用途、CSRF、幂等和不可篡改审计；客户端不能指定原始 SQL、任意字段、收件人、存储地址、文件名、下载 URL 或绕过行数限制。
+      operationId: createOperationsReportExport
+      x-required-platform-roles: [SERVICE_MANAGER, REPORT_VIEWER, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-report-export-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperationsReportExportRequest'
+      responses:
+        '202':
+          description: 导出任务已受控排队；不表示文件已生成或可下载。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsReportExportJob'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /reports/operations/exports/{reportExportJobId}:
+    get:
+      tags: [OperationsReportingAdmin]
+      summary: 查询受控运营报表导出任务
+      description: 仅导出申请人或具备同一数据范围的受权审计/管理主体可查看脱敏状态；导出任务 ID 不能用于读取他人的范围、文件、失败细节或下载资格。
+      operationId: getOperationsReportExport
+      parameters:
+        - $ref: '#/components/parameters/ReportExportJobId'
+      responses:
+        '200':
+          description: 已授权导出任务状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsReportExportJob'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /reports/operations/exports/{reportExportJobId}/content:
+    get:
+      tags: [OperationsReportingAdmin]
+      summary: 下载已完成的受控运营报表导出文件
+      description: |
+        文件下载时必须再次验证当前 IAM 身份、申请人或受权审计/管理关系、当前数据范围、短时有效期和二次授权绑定；
+        每次下载写入审计。只允许服务端生成的 `attachment` 响应和受控文件名，不返回对象存储地址、永久 URL 或无鉴权链接。
+      operationId: downloadOperationsReportExport
+      parameters:
+        - $ref: '#/components/parameters/ReportExportJobId'
+        - $ref: '#/components/parameters/ReportAccessGrant'
+      responses:
+        '200':
+          description: 已授权的完整导出文件；响应应带水印/脱敏信息并使用 attachment 下载头。
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            X-Content-Type-Options:
+              schema:
+                type: string
+                const: nosniff
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
 components:
   securitySchemes:
     sessionCookie:
@@ -1784,6 +2306,104 @@ components:
       description: 当前主体可配置的消息类别；是否允许退订由服务端策略决定，强制待办类别不可关闭。
       schema:
         $ref: '#/components/schemas/NotificationCategory'
+    SlaPolicyId:
+      name: slaPolicyId
+      in: path
+      required: true
+      description: SLA 策略逻辑标识；不构成配置读取、修改或发布权限。
+      schema:
+        type: string
+        pattern: '^SLA-[A-Za-z0-9_-]{8,64}$'
+    SlaPolicyVersion:
+      name: slaPolicyVersion
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    SlaWorkCalendarId:
+      name: slaWorkCalendarId
+      in: path
+      required: true
+      description: 工作日历逻辑标识；服务端仍须校验当前管理范围和版本状态。
+      schema:
+        type: string
+        pattern: '^SLACAL-[A-Za-z0-9_-]{8,64}$'
+    SlaWorkCalendarVersion:
+      name: slaWorkCalendarVersion
+      in: path
+      required: true
+      schema:
+        type: integer
+        minimum: 1
+    ReportExportJobId:
+      name: reportExportJobId
+      in: path
+      required: true
+      description: 导出任务定位符，绝不构成查看状态或下载文件的授权。
+      schema:
+        type: string
+        pattern: '^REXP-[A-Za-z0-9_-]{8,64}$'
+    ReportFrom:
+      name: from
+      in: query
+      required: true
+      description: 统计区间起点，包含该时刻；服务端限制最大回溯期和最大跨度。
+      schema:
+        type: string
+        format: date-time
+    ReportTo:
+      name: to
+      in: query
+      required: true
+      description: 统计区间终点，不包含该时刻；服务端校验 from < to 及受控最大跨度。
+      schema:
+        type: string
+        format: date-time
+    ReportTimeZone:
+      name: timeZone
+      in: query
+      description: |
+        用于展示分桶边界的 IANA 时区，默认服务端按组织/平台配置决定。仅允许服务端白名单中的 IANA 名称；
+        所有响应同时返回实际生效时区，指标原始计算时刻均为 UTC。
+      schema:
+        type: string
+        pattern: '^[A-Za-z]+(?:[_+-][A-Za-z0-9]+)*(?:/[A-Za-z0-9_+.-]+)+$'
+        maxLength: 64
+    ReportOrganizationIamId:
+      name: organizationIamOrganizationId
+      in: query
+      description: |
+        可选的组织范围筛选，仅能收窄当前主体实时数据范围；不可用 ID 扩大范围。跨组织、含下级或超过服务端大范围阈值的请求
+        必须完成二次鉴权并审计；无权对象按防枚举策略处理。
+      schema:
+        type: string
+        maxLength: 128
+    ReportIncludeDescendants:
+      name: includeDescendants
+      in: query
+      description: 仅在当前组织范围内生效；服务端以 IAM 当前组织树计算，不能由客户端提供下级列表。
+      schema:
+        type: boolean
+        default: false
+    ReportPurpose:
+      name: X-Report-Purpose
+      in: header
+      description: 大范围、跨组织或导出时必填的受控用途说明；服务端净化、限长、审计并可要求二次鉴权。
+      schema:
+        type: string
+        minLength: 4
+        maxLength: 300
+    ReportAccessGrant:
+      name: X-Report-Access-Grant
+      in: header
+      description: |
+        当服务端判定为跨组织、大范围或导出时必填。该值只能是服务端在二次认证/审批后签发、绑定当前主体、规范化筛选、用途、操作和短时有效期的授权凭据；
+        不能由前端自行构造，不能跨主体、报表类型、范围或导出任务复用，且不得记录在日志、URL 或客户端持久化存储。
+      schema:
+        type: string
+        minLength: 20
+        maxLength: 2048
     Page:
       name: page
       in: query
@@ -2076,7 +2696,7 @@ components:
           description: 可选展示摘要；不应包含无权查看的组织层级、CI 或业务敏感信息。
     PlatformRole:
       type: string
-      enum: [REQUESTER, FIRST_LINE_SUPPORT, SECOND_LINE_SUPPORT, APPROVER, SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      enum: [REQUESTER, FIRST_LINE_SUPPORT, SECOND_LINE_SUPPORT, APPROVER, SERVICE_MANAGER, SLA_MANAGER, REPORT_VIEWER, PLATFORM_ADMIN, AUDITOR]
     IdentitySyncTriggerRequest:
       type: object
       additionalProperties: false
@@ -4353,6 +4973,674 @@ components:
         total:
           type: integer
           minimum: 0
+    SlaConfigurationLifecycleState:
+      type: string
+      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, REJECTED, SUPERSEDED]
+    SlaPauseCondition:
+      type: object
+      additionalProperties: false
+      required: [conditionCode, pauseOnTicketStatuses, resumeOnTicketStatuses]
+      properties:
+        conditionCode:
+          type: string
+          enum: [WAITING_FOR_REQUESTER, APPROVED_MAINTENANCE_WINDOW, APPROVED_EXTERNAL_DEPENDENCY]
+          description: 仅允许服务端支持的暂停条件；不能使用脚本、表达式、任意事件或客户端时长。
+        pauseOnTicketStatuses:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/TicketStatus'
+        resumeOnTicketStatuses:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/TicketStatus'
+    SlaTargetDefinition:
+      type: object
+      additionalProperties: false
+      required: [targetType, targetBusinessMinutes, warningPercent]
+      properties:
+        targetType:
+          type: string
+          enum: [FIRST_RESPONSE, RESOLUTION]
+        targetBusinessMinutes:
+          type: integer
+          minimum: 1
+          maximum: 525600
+          description: 按已发布工作日历计数的业务分钟；最终目标时间只能由服务端计算。
+        warningPercent:
+          type: integer
+          minimum: 1
+          maximum: 99
+          description: 已用时达到该百分比时产生风险状态/受控通知；当前版本不自动升级工单。
+    SlaPolicyMatchCriteria:
+      type: object
+      additionalProperties: false
+      required: [ticketTypes]
+      properties:
+        ticketTypes:
+          type: array
+          minItems: 1
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/TicketType'
+        serviceCatalogItemIds:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          description: 仅已发布且当前管理范围内的服务目录项可匹配。
+          items:
+            type: string
+            maxLength: 64
+        organizationIamOrganizationIds:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          description: 仅当前管理范围内的 IAM 组织投影可匹配；服务端而非客户端解释下级组织关系。
+          items:
+            type: string
+            maxLength: 128
+        priorityCodes:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            type: string
+            maxLength: 64
+    SlaWorkCalendarReference:
+      type: object
+      additionalProperties: false
+      required: [id, version]
+      properties:
+        id:
+          type: string
+          pattern: '^SLACAL-[A-Za-z0-9_-]{8,64}$'
+        version:
+          type: integer
+          minimum: 1
+          description: 只能引用已发布冻结版本；服务端拒绝草稿、待审核和无权日历。
+    SlaPolicyDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [name, version, priority, matchCriteria, workCalendar, targets, pauseConditions, reason]
+      x-server-enforced:
+        - sla-configuration-management-scope-check
+        - published-calendar-version-check
+        - match-overlap-and-priority-conflict-check
+        - supported-pause-condition-state-machine-check
+        - no-direct-publication-or-auto-escalation
+        - immutable-configuration-audit-event
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 0
+          description: 创建后续草稿时必须与当前逻辑策略版本一致；服务端据此执行乐观锁，不能由客户端指定新版本号。
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: 仅用于服务端处理已发布策略匹配冲突；相同范围内的歧义优先级禁止发布。
+        matchCriteria:
+          $ref: '#/components/schemas/SlaPolicyMatchCriteria'
+        workCalendar:
+          $ref: '#/components/schemas/SlaWorkCalendarReference'
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/SlaTargetDefinition'
+        pauseConditions:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/SlaPauseCondition'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: 变更原因；服务端净化并写入审计摘要。
+    SlaPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, name, version, lifecycleState, priority, matchCriteria, workCalendar, targets, pauseConditions, createdAt, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^SLA-[A-Za-z0-9_-]{8,64}$'
+        name:
+          type: string
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          $ref: '#/components/schemas/SlaConfigurationLifecycleState'
+        priority:
+          type: integer
+          minimum: 1
+        matchCriteria:
+          $ref: '#/components/schemas/SlaPolicyMatchCriteria'
+        workCalendar:
+          $ref: '#/components/schemas/SlaWorkCalendarReference'
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlaTargetDefinition'
+        pauseConditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlaPauseCondition'
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        auditEventId:
+          type: string
+          maxLength: 128
+    SlaPolicyPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/SlaPolicy'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    SlaPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: 发布申请理由；审批人、发布状态和影响结果均由服务端决定。
+    SlaPublicationRequestResult:
+      type: object
+      additionalProperties: false
+      required: [resourceId, version, lifecycleState, approvalTaskId, auditEventId]
+      properties:
+        resourceId:
+          type: string
+          maxLength: 128
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          type: string
+          const: PENDING_REVIEW
+        approvalTaskId:
+          type: string
+          maxLength: 128
+          description: 仅作审批任务定位，不能替代对象授权或允许申请人自审。
+        auditEventId:
+          type: string
+          maxLength: 128
+    SlaWeeklyWorkingWindow:
+      type: object
+      additionalProperties: false
+      required: [dayOfWeek, startTime, endTime]
+      properties:
+        dayOfWeek:
+          type: string
+          enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY]
+        startTime:
+          type: string
+          pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'
+        endTime:
+          type: string
+          pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'
+    SlaWorkCalendarDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [name, version, timeZone, workingWindows, holidays, reason]
+      x-server-enforced:
+        - sla-configuration-management-scope-check
+        - allowed-iana-time-zone-and-dst-validation
+        - non-overlapping-working-window-validation
+        - immutable-version-and-audit-event
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 0
+          description: 新版本创建时服务端据此进行乐观锁；客户端不能指定新版本号或发布状态。
+        timeZone:
+          type: string
+          pattern: '^[A-Za-z]+(?:[_+-][A-Za-z0-9]+)*(?:/[A-Za-z0-9_+.-]+)+$'
+          maxLength: 64
+          description: 仅允许服务端白名单的 IANA 时区；DST 重复/缺失时间由服务端以确定规则解释并审计。
+        workingWindows:
+          type: array
+          minItems: 1
+          maxItems: 21
+          items:
+            $ref: '#/components/schemas/SlaWeeklyWorkingWindow'
+        holidays:
+          type: array
+          maxItems: 1000
+          uniqueItems: true
+          items:
+            type: string
+            format: date
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    SlaWorkCalendar:
+      type: object
+      additionalProperties: false
+      required: [id, name, version, lifecycleState, timeZone, workingWindows, holidays, createdAt, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^SLACAL-[A-Za-z0-9_-]{8,64}$'
+        name:
+          type: string
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          $ref: '#/components/schemas/SlaConfigurationLifecycleState'
+        timeZone:
+          type: string
+          maxLength: 64
+        workingWindows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SlaWeeklyWorkingWindow'
+        holidays:
+          type: array
+          items:
+            type: string
+            format: date
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        auditEventId:
+          type: string
+          maxLength: 128
+    SlaWorkCalendarPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/SlaWorkCalendar'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    TicketSlaTargetStatus:
+      type: object
+      additionalProperties: false
+      required: [targetType, state, targetAt, businessMinutesRemaining]
+      properties:
+        targetType:
+          type: string
+          enum: [FIRST_RESPONSE, RESOLUTION]
+        state:
+          type: string
+          enum: [ON_TRACK, AT_RISK, BREACHED, PAUSED, NOT_APPLICABLE]
+        targetAt:
+          type: string
+          format: date-time
+        businessMinutesRemaining:
+          type: integer
+          description: 负数代表已违约；仅由服务端按策略快照与业务日历计算。
+        breachedAt:
+          type: string
+          format: date-time
+    TicketSlaStatus:
+      type: object
+      additionalProperties: false
+      required: [ticketId, policySnapshot, calculationTimeZone, calculatedAt, paused, targets]
+      properties:
+        ticketId:
+          type: string
+          pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+        policySnapshot:
+          type: object
+          additionalProperties: false
+          required: [policyId, policyVersion, workCalendarId, workCalendarVersion]
+          properties:
+            policyId:
+              type: string
+              pattern: '^SLA-[A-Za-z0-9_-]{8,64}$'
+            policyVersion:
+              type: integer
+              minimum: 1
+            workCalendarId:
+              type: string
+              pattern: '^SLACAL-[A-Za-z0-9_-]{8,64}$'
+            workCalendarVersion:
+              type: integer
+              minimum: 1
+        calculationTimeZone:
+          type: string
+          maxLength: 64
+        calculatedAt:
+          type: string
+          format: date-time
+        paused:
+          type: boolean
+        pauseReasonCode:
+          type: string
+          maxLength: 80
+          description: 仅在 paused=true 时返回已授权的受控原因码。
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/TicketSlaTargetStatus'
+    ReportMetricDefinition:
+      type: object
+      additionalProperties: false
+      required: [code, name, unit, definition, calculationBasis]
+      properties:
+        code:
+          type: string
+          enum: [TICKET_CREATED_COUNT, TICKET_RESOLVED_COUNT, OPEN_TICKET_COUNT, TICKET_STATUS_DISTRIBUTION, TICKET_TYPE_DISTRIBUTION, RESOLUTION_BUSINESS_MINUTES_P50, RESOLUTION_BUSINESS_MINUTES_P90, SLA_RESOLUTION_COMPLIANCE_RATE, SLA_FIRST_RESPONSE_COMPLIANCE_RATE, SLA_AT_RISK_COUNT, SLA_BREACHED_COUNT, BACKLOG_AGING_COUNT]
+        name:
+          type: string
+          maxLength: 120
+        unit:
+          type: string
+          enum: [COUNT, PERCENT, BUSINESS_MINUTES]
+        definition:
+          type: string
+          maxLength: 1000
+          description: 固定且可版本化的指标口径，包括分子/分母、状态边界及排除条件；不能由客户端表达式定义。
+        calculationBasis:
+          type: string
+          enum: [EVENT_TIME, RESOLUTION_TIME, SNAPSHOT_TIME]
+    ReportMetricDimension:
+      type: object
+      additionalProperties: false
+      properties:
+        ticketStatus:
+          $ref: '#/components/schemas/TicketStatus'
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+    ReportMetricValue:
+      type: object
+      additionalProperties: false
+      required: [code, value, availability]
+      properties:
+        code:
+          type: string
+          maxLength: 80
+        value:
+          type: number
+        dimension:
+          $ref: '#/components/schemas/ReportMetricDimension'
+        availability:
+          type: string
+          enum: [COMPLETE, PARTIAL, NOT_AVAILABLE]
+          description: NOT_AVAILABLE 不得以 0 伪造；缺失数据原因见数据新鲜度摘要。
+    ReportDataFreshness:
+      type: object
+      additionalProperties: false
+      required: [asOf, aggregationLagSeconds, missingDataStatus]
+      properties:
+        asOf:
+          type: string
+          format: date-time
+          description: 汇总数据最新覆盖时刻（UTC）。
+        aggregationLagSeconds:
+          type: integer
+          minimum: 0
+          description: 当前时间与最新覆盖时刻的滞后秒数；超过服务端阈值时报告应标记 PARTIAL/NOT_AVAILABLE。
+        missingDataStatus:
+          type: string
+          enum: [NONE, PARTIAL, UNAVAILABLE]
+        missingBucketCount:
+          type: integer
+          minimum: 0
+        reasonCode:
+          type: string
+          maxLength: 80
+          description: 脱敏原因码，不返回数据库、作业、SQL 或基础设施细节。
+    OperationsReportScope:
+      type: object
+      additionalProperties: false
+      required: [effectiveTimeZone, from, to, dataScopeFiltered]
+      properties:
+        effectiveTimeZone:
+          type: string
+          maxLength: 64
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        dataScopeFiltered:
+          type: boolean
+          const: true
+        organizationScopeSummary:
+          type: string
+          maxLength: 200
+          description: 已脱敏范围摘要；不返回无权组织层级或完整数据范围。
+    OperationsKpiReport:
+      type: object
+      additionalProperties: false
+      required: [scope, metricDefinitions, metrics, freshness]
+      properties:
+        scope:
+          $ref: '#/components/schemas/OperationsReportScope'
+        metricDefinitions:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ReportMetricDefinition'
+        metrics:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ReportMetricValue'
+        freshness:
+          $ref: '#/components/schemas/ReportDataFreshness'
+    OperationsTrendPoint:
+      type: object
+      additionalProperties: false
+      required: [bucketStart, bucketEnd, availability, metrics]
+      properties:
+        bucketStart:
+          type: string
+          format: date-time
+        bucketEnd:
+          type: string
+          format: date-time
+        availability:
+          type: string
+          enum: [COMPLETE, PARTIAL, NOT_AVAILABLE]
+        metrics:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ReportMetricValue'
+    OperationsTrendReport:
+      type: object
+      additionalProperties: false
+      required: [scope, metricDefinitions, granularity, points, freshness]
+      properties:
+        scope:
+          $ref: '#/components/schemas/OperationsReportScope'
+        metricDefinitions:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ReportMetricDefinition'
+        granularity:
+          type: string
+          enum: [HOUR, DAY, WEEK, MONTH]
+        points:
+          type: array
+          maxItems: 5000
+          items:
+            $ref: '#/components/schemas/OperationsTrendPoint'
+        freshness:
+          $ref: '#/components/schemas/ReportDataFreshness'
+    OperationsQueueLoadItem:
+      type: object
+      additionalProperties: false
+      required: [queueCode, openTicketCount, pendingAcceptanceCount, atRiskCount, breachedCount]
+      properties:
+        queueCode:
+          type: string
+          maxLength: 128
+        queueName:
+          type: string
+          maxLength: 200
+        openTicketCount:
+          type: integer
+          minimum: 0
+        pendingAcceptanceCount:
+          type: integer
+          minimum: 0
+        atRiskCount:
+          type: integer
+          minimum: 0
+        breachedCount:
+          type: integer
+          minimum: 0
+    OperationsQueueLoadReport:
+      type: object
+      additionalProperties: false
+      required: [scope, items, freshness]
+      properties:
+        scope:
+          $ref: '#/components/schemas/OperationsReportScope'
+        items:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/OperationsQueueLoadItem'
+        freshness:
+          $ref: '#/components/schemas/ReportDataFreshness'
+    ReportRefreshStatus:
+      type: object
+      additionalProperties: false
+      required: [freshness, status]
+      properties:
+        status:
+          type: string
+          enum: [CURRENT, LAGGING, PARTIAL, UNAVAILABLE]
+        freshness:
+          $ref: '#/components/schemas/ReportDataFreshness'
+        nextScheduledRefreshAt:
+          type: string
+          format: date-time
+          description: 可选的受控计划摘要；不泄露后台执行节点或任务参数。
+    OperationsReportExportRequest:
+      type: object
+      additionalProperties: false
+      required: [reportType, from, to, format, purpose]
+      x-server-enforced:
+        - real-time-data-scope-filtering
+        - secondary-authorization-for-export-cross-organization-or-large-range
+        - export-field-row-time-range-watermark-and-retention-policy
+        - asynchronous-generation-and-immutable-audit-event
+      properties:
+        reportType:
+          type: string
+          enum: [KPI, TREND, QUEUE_LOAD]
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        timeZone:
+          type: string
+          maxLength: 64
+        organizationIamOrganizationId:
+          type: string
+          maxLength: 128
+          description: 仅可收窄当前数据范围；不允许客户端提交组织列表或跨范围声明。
+        includeDescendants:
+          type: boolean
+          default: false
+        format:
+          type: string
+          enum: [CSV, XLSX]
+        purpose:
+          type: string
+          minLength: 4
+          maxLength: 300
+        version:
+          type: integer
+          minimum: 0
+          description: 可选导出偏好版本；不是授权、范围或报表版本控制字段。
+    OperationsReportExportJob:
+      type: object
+      additionalProperties: false
+      required: [id, reportType, state, requestedAt, requester, expiresAt, auditEventId]
+      properties:
+        id:
+          type: string
+          pattern: '^REXP-[A-Za-z0-9_-]{8,64}$'
+        reportType:
+          type: string
+          enum: [KPI, TREND, QUEUE_LOAD]
+        state:
+          type: string
+          enum: [QUEUED, RUNNING, COMPLETED, FAILED, EXPIRED]
+        requestedAt:
+          type: string
+          format: date-time
+        requester:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        expiresAt:
+          type: string
+          format: date-time
+          description: 导出文件受控短期保留；到期后物理清理只能由后台保留策略执行。
+        reasonCode:
+          type: string
+          maxLength: 80
+          description: 脱敏状态/失败原因码，不返回 SQL、无权数据或存储位置。
+        auditEventId:
+          type: string
+          maxLength: 128
     ApiError:
       type: object
       additionalProperties: false

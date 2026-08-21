@@ -10,6 +10,8 @@ import NotificationCenterView from '@/views/NotificationCenterView.vue'
 import NotificationRoutingPreviewView from '@/views/NotificationRoutingPreviewView.vue'
 import KnowledgeView from '@/views/KnowledgeView.vue'
 import KnowledgeArticleView from '@/views/KnowledgeArticleView.vue'
+import OperationsReportView from '@/views/OperationsReportView.vue'
+import SlaRuleView from '@/views/SlaRuleView.vue'
 
 interface NavigationItem {
   path: string
@@ -28,7 +30,7 @@ export const navigation = [
   { path: '/knowledge', name: 'knowledge', label: '知识库', icon: '▤', component: KnowledgeView },
   { path: '/service-config', name: 'service-config', label: '服务配置', icon: '⚙', component: ServiceConfigView },
   { path: '/iam-projection', name: 'iam-projection', label: 'IAM 投影', icon: '◎', component: IamProjectionView },
-  { path: '/reports', name: 'reports', label: '运营报表', icon: '▥' },
+  { path: '/reports', name: 'reports', label: '运营报表', icon: '▥', component: OperationsReportView },
   { path: '/operations', name: 'operations', label: '运行治理', icon: '◈', component: NotificationRoutingPreviewView },
 ] satisfies NavigationItem[]
 
@@ -44,6 +46,7 @@ const router = createRouter({
     { path: '/login', name: 'login', component: PlaceholderView, meta: { label: 'IAM 登录' } },
     { path: '/tickets/:ticketId', name: 'ticket-detail', component: TicketDetailView, meta: { label: '工单详情' } },
     { path: '/knowledge/:articleId', name: 'knowledge-article', component: KnowledgeArticleView, meta: { label: '知识详情' } },
+    { path: '/sla-rules', name: 'sla-rules', component: SlaRuleView, meta: { label: 'SLA 规则' } },
   ],
 })
 
