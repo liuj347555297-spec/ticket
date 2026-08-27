@@ -66,6 +66,7 @@ interface KnowledgeImportJobResponse {
 }
 export interface KnowledgeImportRequest { title: string; targetOrganizationIamId: string; serviceCatalogItemIds: string[]; tags: KnowledgeTag[]; file: File }
 export interface KnowledgeResult<T> { data: T; source: 'api' | 'demo' }
+interface KnowledgeDocumentWire { id: string; title: string; categoryCode: string; tags: string[]; status: KnowledgePublicationStatus; currentVersionId: string; updatedAt: string }
 
 const demoArticles: KnowledgeArticle[] = [
   { id: 'KB-ERP-TIMEOUT', title: 'ERP 查询超时排查指引', summary: '先确认影响范围、查询条件和近期变更，再按受控步骤核查。', category: '业务系统 / 性能', tags: [{ code: 'TAG-ERP', name: '#ERP' }, { code: 'TAG-QUERY-TIMEOUT', name: '#查询超时' }], version: 4, publicationStatus: 'PUBLISHED', sourceType: 'MANUAL', updatedAt: '2026-08-20T10:22:00+08:00', publishedAt: '2026-08-20T10:22:00+08:00', serviceCatalogItems: [{ id: 'SC-ERP-PERFORMANCE', name: '业务系统 - 页面性能问题' }], relatedCases: [{ id: 'CASE-2026-018', title: '采购订单列表查询慢' }], relatedServiceCatalogItemIds: ['SC-ERP-PERFORMANCE'], content: '适用范围：已授权的 ERP 页面性能问题。\n\n1. 通过监控确认影响范围；2. 记录错误码与发生时间；3. 核对近期发布和查询条件；4. 未恢复时按服务目录继续建单。', attachments: [{ id: 'KBA-ERP-001', displayFileName: 'ERP性能排查清单.pdf', detectedMediaType: 'application/pdf', sizeBytes: 184320, scanState: 'SCAN_PASSED', downloadable: true }] },
@@ -75,7 +76,16 @@ const demoArticles: KnowledgeArticle[] = [
 function isUnavailable(error: unknown): boolean { return error instanceof TypeError || (error instanceof ApiError && error.status === 503) }
 const canUseDemoFallback = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE !== 'false'
 function fallback<T>(error: unknown, data: T): KnowledgeResult<T> { if (!canUseDemoFallback || !isUnavailable(error)) throw error; return { data, source: 'demo' } }
-function queryString(query: KnowledgeQuery): string { const params = new URLSearchParams(); Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) }); return params.toString() }
+function fromDocument(document: KnowledgeDocumentWire): KnowledgeArticle {
+  return {
+    id: document.id, title: document.title, category: document.categoryCode,
+    tags: document.tags.map((name) => ({ name, kind: 'STANDARD' as const })), version: 1,
+    publicationStatus: document.status, updatedAt: document.updatedAt, publishedAt: document.updatedAt,
+    sourceType: 'IMPORTED', summary: '受控导入知识文档；正文内容仅在后端提供经授权的读取接口后展示。',
+    content: '当前后端知识服务已返回文档元数据、分类、标签和发布状态；正文读取接口尚未开放，因此本页面不会伪造或展示未授权的文件内容。',
+    attachments: [], serviceCatalogItems: [], relatedCases: [],
+  }
+}
 
 /** Knowledge files are never opened, parsed, previewed or scanned by the browser. */
 async function submitImport(request: KnowledgeImportRequest): Promise<KnowledgeImportJobResponse> {
@@ -91,7 +101,7 @@ async function submitImport(request: KnowledgeImportRequest): Promise<KnowledgeI
 }
 
 export const knowledgeApi = {
-  async list(query: KnowledgeQuery = {}): Promise<KnowledgeResult<KnowledgeArticlePage>> { try { return { data: await apiRequest<KnowledgeArticlePage>(`/knowledge/articles?${queryString({ page: 1, pageSize: 20, ...query })}`), source: 'api' } } catch (error) { const text = `${query.q ?? ''} ${query.tag ?? ''} ${query.category ?? ''}`.toLocaleLowerCase(); const items = demoArticles.filter((item) => !text || `${item.title} ${item.summary} ${item.category} ${item.tags.map((tag) => tag.name).join(' ')}`.toLocaleLowerCase().includes(text)); return fallback(error, { items, page: 1, pageSize: 20, total: items.length }) } },
-  async get(articleId: string): Promise<KnowledgeResult<KnowledgeArticle>> { try { return { data: await apiRequest<KnowledgeArticle>(`/knowledge/articles/${encodeURIComponent(articleId)}`), source: 'api' } } catch (error) { const article = demoArticles.find((item) => item.id === articleId); if (!article) throw error; return fallback(error, article) } },
+  async list(query: KnowledgeQuery = {}): Promise<KnowledgeResult<KnowledgeArticlePage>> { try { const documents = await apiRequest<KnowledgeDocumentWire[]>('/knowledge/documents'); const text = `${query.q ?? ''} ${query.tag ?? ''} ${query.category ?? ''}`.toLocaleLowerCase(); const items = documents.map(fromDocument).filter((item) => !text || `${item.title} ${item.summary} ${item.category} ${item.tags.map((tag) => tag.name).join(' ')}`.toLocaleLowerCase().includes(text)); return { data: { items, page: 1, pageSize: 20, total: items.length }, source: 'api' } } catch (error) { const text = `${query.q ?? ''} ${query.tag ?? ''} ${query.category ?? ''}`.toLocaleLowerCase(); const items = demoArticles.filter((item) => !text || `${item.title} ${item.summary} ${item.category} ${item.tags.map((tag) => tag.name).join(' ')}`.toLocaleLowerCase().includes(text)); return fallback(error, { items, page: 1, pageSize: 20, total: items.length }) } },
+  async get(articleId: string): Promise<KnowledgeResult<KnowledgeArticle>> { try { const document = await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}`); return { data: fromDocument(document), source: 'api' } } catch (error) { const article = demoArticles.find((item) => item.id === articleId); if (!article) throw error; return fallback(error, article) } },
   async createImport(request: KnowledgeImportRequest): Promise<KnowledgeResult<KnowledgeImportRecord>> { try { const job = await submitImport(request); return { data: { id: job.id, title: request.title, targetOrganizationIamId: request.targetOrganizationIamId, serviceCatalogItemIds: request.serviceCatalogItemIds, tags: request.tags, status: job.state, requestedAt: job.requestedAt, requester: job.requester.displayName, reasonCode: job.reasonCode, draftArticleId: job.draftArticleId, draftVersion: job.draftVersion, auditEventId: job.auditEventId }, source: 'api' } } catch (error) { if (canUseDemoFallback && isUnavailable(error)) throw new ApiError('开发演示不接收或扫描本地文件；请连接服务端后提交导入。', 503, 'DEMO_UPLOAD_BLOCKED'); throw error } },
 }

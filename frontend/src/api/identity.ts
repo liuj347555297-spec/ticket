@@ -7,6 +7,7 @@ export type PlatformRole =
   | 'SECOND_LINE_SUPPORT'
   | 'APPROVER'
   | 'SERVICE_MANAGER'
+  | 'SLA_MANAGER'
   | 'PLATFORM_ADMIN'
   | 'AUDITOR'
 export type DataScopeType = 'ORGANIZATION' | 'SERVICE' | 'QUEUE' | 'CONFIGURATION_ITEM'

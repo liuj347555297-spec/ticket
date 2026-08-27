@@ -5,11 +5,15 @@ import cn.servicehub.catalog.application.CatalogValidationException;
 import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
 import cn.servicehub.workflow.application.WorkflowConflictException;
+import cn.servicehub.workflow.application.WorkflowExecutionUnavailableException;
 import cn.servicehub.workflow.application.WorkflowStateException;
+import cn.servicehub.access.application.BackofficeAccessConflictException;
 import cn.servicehub.attachment.application.AttachmentNotFoundException;
 import cn.servicehub.attachment.application.AttachmentValidationException;
 import cn.servicehub.knowledge.application.KnowledgeNotFoundException;
 import cn.servicehub.knowledge.application.KnowledgeValidationException;
+import cn.servicehub.integration.application.IntegrationSecurityException;
+import cn.servicehub.announcement.application.AnnouncementValidationException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -21,9 +25,13 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     @ExceptionHandler({MethodArgumentNotValidException.class, HandlerMethodValidationException.class})
     ResponseEntity<ApiError> validation(Exception ignored, HttpServletRequest request) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Invalid request", request));
@@ -50,16 +58,28 @@ public class GlobalExceptionHandler {
             .body(error(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "HTTP method is not supported", request));
     }
 
+    @ExceptionHandler(NoResourceFoundException.class)
+    ResponseEntity<ApiError> resourceNotFound(NoResourceFoundException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
+    }
+
     @ExceptionHandler(IdempotencyConflictException.class)
     ResponseEntity<ApiError> idempotencyConflict(IdempotencyConflictException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .body(error(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency key conflicts with a prior request", request));
     }
 
-    @ExceptionHandler({WorkflowConflictException.class, WorkflowStateException.class})
+    @ExceptionHandler({WorkflowConflictException.class, WorkflowStateException.class, BackofficeAccessConflictException.class})
     ResponseEntity<ApiError> workflowConflict(RuntimeException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
             .body(error(HttpStatus.CONFLICT, "WORKFLOW_CONFLICT", "Workflow action conflicts with current state", request));
+    }
+
+    @ExceptionHandler(WorkflowExecutionUnavailableException.class)
+    ResponseEntity<ApiError> workflowExecutionUnavailable(WorkflowExecutionUnavailableException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(error(HttpStatus.SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", "Workflow execution is temporarily unavailable", request));
     }
 
     @ExceptionHandler({TicketNotFoundException.class, AttachmentNotFoundException.class, KnowledgeNotFoundException.class})
@@ -68,7 +88,7 @@ public class GlobalExceptionHandler {
             .body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
     }
 
-    @ExceptionHandler({AttachmentValidationException.class, KnowledgeValidationException.class})
+    @ExceptionHandler({AttachmentValidationException.class, KnowledgeValidationException.class, AnnouncementValidationException.class})
     ResponseEntity<ApiError> attachmentRejected(RuntimeException ignored, HttpServletRequest request) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "CONTENT_REJECTED", "Content is not accepted", request));
     }
@@ -79,6 +99,12 @@ public class GlobalExceptionHandler {
             .body(error(HttpStatus.FORBIDDEN, "FORBIDDEN", "You are not authorized for this operation", request));
     }
 
+    @ExceptionHandler(IntegrationSecurityException.class)
+    ResponseEntity<ApiError> integrationRejected(IntegrationSecurityException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+            .body(error(HttpStatus.FORBIDDEN, "INTEGRATION_REJECTED", "Integration callback was rejected", request));
+    }
+
     @ExceptionHandler(IamProjectionUnavailableException.class)
     ResponseEntity<ApiError> iamProjectionUnavailable(IamProjectionUnavailableException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
@@ -86,7 +112,9 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    ResponseEntity<ApiError> unhandled(Exception ignored, HttpServletRequest request) {
+    ResponseEntity<ApiError> unhandled(Exception exception, HttpServletRequest request) {
+        log.error("Unhandled API error; requestId={}, method={}, path={}",
+            request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE), request.getMethod(), request.getRequestURI(), exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
             .body(error(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Unexpected server error", request));
     }

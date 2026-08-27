@@ -93,6 +93,8 @@ SERVICEHUB_DB_PASSWORD=<SECRET>
 4. 迁移后核对 Flyway 历史表、关键索引与建单/查询健康检查，并保留不含密钥的执行证据。
 5. 迁移失败时先停止继续发布，保留日志并按已演练方案处理；不得直接修改 Flyway 历史表伪造成功。
 
+当前新增的 `V15__iam_user_role_projection.sql` 建立用户—平台角色只读投影；`V16__controlled_jump_approval_policy_snapshot.sql` 为已有受控跳转申请回填“历史定义未记录”标记，并要求新申请保存具体 Flowable 定义和审批策略快照；`V17__controlled_jump_approval_decision_events.sql` 保存追加式单次决策审计；`V18__approval_policy_candidate_user_snapshot.sql` 保存申请创建时冻结的 IAM 审批人集合，并对旧申请回填空集合。V16/V18 不删除历史数据；缺少具体定义或冻结人员集合的历史申请仅可审计查看，禁止继续审批。冻结人员集合只存储在服务端审计快照中，不通过工单详情响应返回。执行迁移后应分别验证：无活动支持角色的用户不能被分派；新审批申请返回非空 `approvalPolicy.processDefinitionId`、版本和决策模式，但不返回候选 IAM 用户 ID；`ANY_ONE` 一次审批后结束，配置 `SERVICEHUB_CONTROLLED_JUMP_ALL_OF_TARGET_NODES` 的 `ALL_OF` 场景必须由全部冻结人员通过或任一人员拒绝后结束。
+
 **回滚原则：** Flyway 社区版通常以“前向修复”为主。对不可逆 DDL、数据回填、删列/删表，必须在迁移评审中提供已验证的备份恢复或显式补偿迁移；未验证恢复前不得执行破坏性变更。
 
 ## 6. 备份、恢复与本机清理
@@ -108,3 +110,11 @@ SERVICEHUB_DB_PASSWORD=<SECRET>
 - [ ] MySQL 仅暴露给批准来源，TLS/网络策略按目标环境要求配置。
 - [ ] Flyway 迁移、备份恢复、应用健康检查和最小权限验证均已完成。
 - [ ] 生产账号、迁移账号、备份账号彼此分离，且权限经过复核。
+
+## 8. 当前本地启动与验证（不含密钥）
+
+本机开发使用私有 `backend/.env.local` 注入数据库连接信息，并显式启用 `mysql,local-dev` profiles。`local-dev` 仅为 loopback 开发身份与虚构 IAM 夹具服务，不能复制至其他环境；虚构 IAM、服务目录和字典夹具初始化器只在 `mysql` 与 `local-dev` 同时启用时运行，避免 H2 演示模式误执行 MySQL 投影 SQL。
+
+多身份演练时，可在本机浏览器或测试客户端附加 `X-ServiceHub-Dev-Identity` 请求头选择固定档案：`requester`、`first-line`、`service-manager`、`admin`。该头只接受上述固定编码，服务端自行映射固定 IAM ID 与最小角色集；未知编码不会降级为管理员，也不能传入任意用户、角色或组织。未提供该头时仅为保持既有本地兼容性使用 `admin` 夹具。此机制仅在 `local-dev` profile 与 loopback 请求同时成立时存在。
+
+启动后应验证以下不含敏感信息的结果：前端开发服务仅监听 `127.0.0.1:5173`；后端监听本机 `8080`；Flyway 校验并迁移目标开发库；`GET /api/v1/tickets?queue=MY_TODO` 返回当前开发身份的服务端队列。不得将环境文件、命令输出中的连接信息或数据库凭据复制至本文档、Git 或工单。

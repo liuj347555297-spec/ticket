@@ -12,6 +12,9 @@ import KnowledgeView from '@/views/KnowledgeView.vue'
 import KnowledgeArticleView from '@/views/KnowledgeArticleView.vue'
 import OperationsReportView from '@/views/OperationsReportView.vue'
 import SlaRuleView from '@/views/SlaRuleView.vue'
+import IntegrationGovernanceView from '@/views/IntegrationGovernanceView.vue'
+import ApprovalTaskInboxView from '@/views/ApprovalTaskInboxView.vue'
+import BackofficeAccessView from '@/views/BackofficeAccessView.vue'
 
 interface NavigationItem {
   path: string
@@ -25,13 +28,15 @@ interface NavigationItem {
 export const navigation = [
   { path: '/', name: 'dashboard', label: '服务概览', icon: '▦', component: DashboardView },
   { path: '/tickets', name: 'tickets', label: '工单中心', icon: '▤', component: TicketListView },
+  { path: '/approval-tasks', name: 'approval-tasks', label: '审批待办', icon: '✓', component: ApprovalTaskInboxView },
   { path: '/tickets/new', name: 'create-ticket', label: '新建工单', icon: '+', primary: true, component: TicketCreateView },
   { path: '/notifications', name: 'notifications', label: '消息中心', icon: '♢', component: NotificationCenterView },
   { path: '/knowledge', name: 'knowledge', label: '知识库', icon: '▤', component: KnowledgeView },
   { path: '/service-config', name: 'service-config', label: '服务配置', icon: '⚙', component: ServiceConfigView },
   { path: '/iam-projection', name: 'iam-projection', label: 'IAM 投影', icon: '◎', component: IamProjectionView },
+  { path: '/backoffice-access', name: 'backoffice-access', label: '后台人员授权', icon: '♙', component: BackofficeAccessView },
   { path: '/reports', name: 'reports', label: '运营报表', icon: '▥', component: OperationsReportView },
-  { path: '/operations', name: 'operations', label: '运行治理', icon: '◈', component: NotificationRoutingPreviewView },
+  { path: '/operations', name: 'operations', label: '运行治理', icon: '◈', component: IntegrationGovernanceView },
 ] satisfies NavigationItem[]
 
 const router = createRouter({
@@ -47,6 +52,7 @@ const router = createRouter({
     { path: '/tickets/:ticketId', name: 'ticket-detail', component: TicketDetailView, meta: { label: '工单详情' } },
     { path: '/knowledge/:articleId', name: 'knowledge-article', component: KnowledgeArticleView, meta: { label: '知识详情' } },
     { path: '/sla-rules', name: 'sla-rules', component: SlaRuleView, meta: { label: 'SLA 规则' } },
+    { path: '/notification-routing-preview', name: 'notification-routing-preview', component: NotificationRoutingPreviewView, meta: { label: '消息路由预览' } },
   ],
 })
 

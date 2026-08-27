@@ -1,5 +1,6 @@
 # Local browser automation state and temporary render artifacts
 .playwright-cli/
+.claude/
 tmp/
 
 # Derived previews and test screenshots

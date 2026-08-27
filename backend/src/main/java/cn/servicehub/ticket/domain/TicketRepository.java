@@ -19,6 +19,8 @@ public interface TicketRepository {
      */
     boolean updateStatus(String ticketId, long expectedVersion, TicketStatus status, java.time.Instant updatedAt);
 
+    boolean updateDescription(String ticketId, long expectedVersion, String description, TicketDescriptionFormat format, String descriptionHtml, java.time.Instant updatedAt);
+
     /**
      * Allocates a monotonically increasing number for the given UTC business date. Implementations
      * must make this durable when a database profile is active; application-memory counters are not

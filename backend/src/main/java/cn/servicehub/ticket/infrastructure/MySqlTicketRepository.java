@@ -120,6 +120,14 @@ public class MySqlTicketRepository implements TicketRepository {
     }
 
     @Override
+    public boolean updateDescription(String ticketId, long expectedVersion, String description, cn.servicehub.ticket.domain.TicketDescriptionFormat format, String descriptionHtml, Instant updatedAt) {
+        return jdbcTemplate.update("""
+            UPDATE ticket SET description = ?, description_format = ?, description_html = ?, updated_at = ?, version = version + 1
+            WHERE id = ? AND version = ?
+            """, description, format.name(), descriptionHtml, Timestamp.from(updatedAt), ticketId, expectedVersion) == 1;
+    }
+
+    @Override
     @Transactional
     public long nextTicketSequence(LocalDate businessDate) {
         jdbcTemplate.update("""
@@ -155,11 +163,11 @@ public class MySqlTicketRepository implements TicketRepository {
     private void insertTicket(Ticket ticket) {
         jdbcTemplate.update("""
             INSERT INTO ticket (
-              id, type, status, priority, title, description, structured_fields, tags, related_configuration_item_ids,
+              id, type, status, priority, title, description, description_format, description_html, structured_fields, tags, related_configuration_item_ids,
               requester_iam_user_id, requester_display_name, requester_organization_id, requester_organization_name, requester_position_name,
               requester_captured_at, service_catalog_item_id, service_catalog_item_name, created_at, updated_at, version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, ticket.id(), ticket.type().name(), ticket.status().name(), ticket.priority().name(), ticket.title(), ticket.description(),
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, ticket.id(), ticket.type().name(), ticket.status().name(), ticket.priority().name(), ticket.title(), ticket.description(), ticket.descriptionFormat().name(), ticket.descriptionHtml(),
             asJson(ticket.structuredFields()), asJson(ticket.tags()), asJson(ticket.relatedConfigurationItemIds()),
             ticket.requester().iamUserId(), ticket.requester().displayName(), ticket.requester().organizationId(), ticket.requester().organizationName(),
             ticket.requester().positionName(), Timestamp.from(ticket.requester().capturedAt()), ticket.serviceCatalogItem().id(),
@@ -178,7 +186,7 @@ public class MySqlTicketRepository implements TicketRepository {
         try {
             return new Ticket(resultSet.getString("id"), TicketType.valueOf(resultSet.getString("type")),
                 TicketStatus.valueOf(resultSet.getString("status")), TicketPriority.valueOf(resultSet.getString("priority")),
-                resultSet.getString("title"), resultSet.getString("description"),
+                resultSet.getString("title"), resultSet.getString("description"), cn.servicehub.ticket.domain.TicketDescriptionFormat.valueOf(resultSet.getString("description_format")), resultSet.getString("description_html"),
                 objectMapper.readValue(resultSet.getString("structured_fields"), new TypeReference<Map<String, Object>>() { }),
                 objectMapper.readValue(resultSet.getString("tags"), new TypeReference<List<TicketTag>>() { }),
                 objectMapper.readValue(resultSet.getString("related_configuration_item_ids"), new TypeReference<List<String>>() { }),

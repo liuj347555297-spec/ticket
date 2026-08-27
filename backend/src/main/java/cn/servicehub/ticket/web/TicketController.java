@@ -1,9 +1,13 @@
 package cn.servicehub.ticket.web;
 
 import cn.servicehub.ticket.application.TicketCreateCommand;
+import cn.servicehub.ticket.application.TicketDescription;
+import cn.servicehub.ticket.application.TicketDescriptionSanitizer;
 import cn.servicehub.ticket.application.TicketService;
+import cn.servicehub.ticket.application.TicketRelationService;
 import cn.servicehub.ticket.domain.CreateTicketResult;
 import cn.servicehub.ticket.domain.TicketStatus;
+import cn.servicehub.ticket.domain.TicketQueue;
 import cn.servicehub.ticket.domain.TicketType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -19,6 +23,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -30,9 +35,13 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/tickets")
 public class TicketController {
     private final TicketService ticketService;
+    private final TicketRelationService ticketRelationService;
+    private final TicketDescriptionSanitizer descriptionSanitizer;
 
-    public TicketController(TicketService ticketService) {
+    public TicketController(TicketService ticketService, TicketRelationService ticketRelationService, TicketDescriptionSanitizer descriptionSanitizer) {
         this.ticketService = ticketService;
+        this.ticketRelationService = ticketRelationService;
+        this.descriptionSanitizer = descriptionSanitizer;
     }
 
     @GetMapping
@@ -41,16 +50,18 @@ public class TicketController {
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
         @RequestParam(required = false) TicketStatus status,
         @RequestParam(required = false) TicketType type,
+        @RequestParam(required = false) TicketQueue queue,
         @RequestParam(name = "q", required = false) @Size(min = 1, max = 100) String keyword) {
-        return TicketPageResponse.from(ticketService.list(page, pageSize, status, type, keyword));
+        return TicketPageResponse.from(ticketService.list(page, pageSize, status, type, keyword, queue));
     }
 
     @PostMapping
     ResponseEntity<TicketResponse> create(
         @RequestHeader("Idempotency-Key") @Pattern(regexp = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$") String idempotencyKey,
         @Valid @RequestBody TicketCreateRequest request) {
-        CreateTicketResult result = ticketService.create(new TicketCreateCommand(request.serviceCatalogItemId(), request.type(),
-            normalize(request.title()), normalize(request.description()), request.structuredFields(), toTags(request.tags()),
+        TicketDescription description = descriptionSanitizer.sanitize(request.description(), request.descriptionFormat());
+        CreateTicketResult result = ticketService.create(new TicketCreateCommand(request.serviceCatalogItemId(), request.serviceCatalogFormVersion(), request.type(),
+            normalize(request.title()), description.plainText(), description.format(), description.sanitizedHtml(), request.structuredFields(), toTags(request.tags()),
             request.relatedConfigurationItemIds()), idempotencyKey);
         HttpHeaders headers = new HttpHeaders();
         headers.setLocation(URI.create("/api/v1/tickets/" + result.ticket().id()));
@@ -63,6 +74,26 @@ public class TicketController {
     @GetMapping("/{ticketId}")
     TicketResponse get(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId) {
         return TicketResponse.from(ticketService.get(ticketId));
+    }
+
+    @PatchMapping("/{ticketId}/description")
+    TicketResponse updateDescription(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @RequestHeader(HttpHeaders.IF_MATCH) @Pattern(regexp = "^\"?[0-9]+\"?$") String ifMatch,
+        @Valid @RequestBody TicketDescriptionUpdateRequest request) {
+        return TicketResponse.from(ticketService.updateDescription(ticketId, Long.parseLong(ifMatch.replace("\"", "")), request.description(), request.descriptionFormat()));
+    }
+
+    @GetMapping("/{ticketId}/relations")
+    List<TicketRelationResponse> relations(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId) {
+        return ticketRelationService.list(ticketId).stream().map(TicketRelationResponse::from).toList();
+    }
+
+    @PostMapping("/{ticketId}/relations")
+    ResponseEntity<TicketRelationResponse> relate(
+        @PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @Valid @RequestBody TicketRelationRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+            .body(TicketRelationResponse.from(ticketRelationService.create(ticketId, request.targetTicketId(), request.relationType())));
     }
 
     private static String normalize(String value) {

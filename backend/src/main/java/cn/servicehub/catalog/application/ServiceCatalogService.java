@@ -103,6 +103,7 @@ public class ServiceCatalogService {
     /** Called by ticket creation after authentication; this is the authoritative form/schema gate. */
     public ServiceCatalogItem validateTicketInput(TicketCreateCommand command) {
         ServiceCatalogItem item = publishedItem(command.serviceCatalogItemId());
+        requireCurrentFormVersion(command.serviceCatalogFormVersion());
         if (!item.supportedTicketTypes().contains(command.type())) {
             throw new CatalogValidationException();
         }

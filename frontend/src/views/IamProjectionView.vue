@@ -36,7 +36,7 @@ const selectedUser = computed(() => users.find((user) => user.iamUserId === sele
 const currentUser = computed(() => session.currentUser)
 const currentAuthorization = computed(() => session.authorization)
 const sessionSourceText = computed(() => ({ api: '当前 IAM 会话', 'development-preview': '开发预览回退', unauthenticated: '未认证会话' }[session.source ?? 'unauthenticated']))
-const roleLabels: Record<PlatformRole, string> = { REQUESTER: '普通提单人', FIRST_LINE_SUPPORT: '一线支持', SECOND_LINE_SUPPORT: '二线支持', APPROVER: '审批人', SERVICE_MANAGER: '服务经理', PLATFORM_ADMIN: '平台管理员', AUDITOR: '审计员' }
+const roleLabels: Record<PlatformRole, string> = { REQUESTER: '普通提单人', FIRST_LINE_SUPPORT: '一线支持', SECOND_LINE_SUPPORT: '二线支持', APPROVER: '审批人', SERVICE_MANAGER: '服务经理', SLA_MANAGER: 'SLA 管理员', PLATFORM_ADMIN: '平台管理员', AUDITOR: '审计员' }
 const scopeLabels: Record<DataScopeSummary['scopeType'], string> = { ORGANIZATION: '组织范围', SERVICE: '服务范围', QUEUE: '队列范围', CONFIGURATION_ITEM: 'CI 范围' }
 const statusLabels: Record<ProjectionUserStatus, string> = { ACTIVE: '启用', DISABLED: '停用' }
 </script>

@@ -21,6 +21,7 @@ import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Calculates only. Escalation, penalties and any external notification stay opt-in future capabilities. */
 @Service
@@ -77,9 +78,11 @@ public class SlaService {
         return policies.findAll();
     }
 
+    @Transactional
     public SlaPolicy savePolicy(String policyId, SlaPolicyCommand command) {
         CurrentUser actor = users.requireCurrentUser();
         if (actor.authorities().stream().noneMatch(POLICY_WRITE_ROLES::contains)) throw new AccessDeniedException("SLA policy administration is not authorized");
+        requireWritableScope(actor, command);
         Instant now = clock.instant();
         SlaPolicy existing = policyId == null ? null : policies.findById(policyId).orElseThrow(() -> new IllegalArgumentException("SLA policy not found"));
         if (existing != null && (command.expectedVersion() == null || command.expectedVersion() != existing.version())) throw new IllegalStateException("SLA policy version conflict");
@@ -114,5 +117,22 @@ public class SlaService {
     private boolean isResponseState(TicketStatus status) { return status == TicketStatus.PENDING_ACCEPTANCE || status == TicketStatus.IN_PROGRESS || status == TicketStatus.PENDING_USER_FEEDBACK || status == TicketStatus.RESOLVED || status == TicketStatus.CLOSED; }
     private String clean(String value, int max) { if (value == null || value.isBlank() || value.trim().length() > max) throw new IllegalArgumentException("SLA policy value is invalid"); return value.trim(); }
     private String blankToNull(String value) { return value == null || value.isBlank() ? null : value.trim(); }
+    /**
+     * A service/SLA manager is not a global configuration administrator.  The target scope must
+     * be carried by the IAM assertion itself; an empty scope would otherwise turn a branch rule
+     * into an all-organization rule.  Platform administrators remain the narrowly defined
+     * exception and are still fully audited.
+     */
+    private void requireWritableScope(CurrentUser actor, SlaPolicyCommand command) {
+        if (actor.authorities().contains("ROLE_PLATFORM_ADMIN")) return;
+        String organizationScope = blankToNull(command.organizationScopeId());
+        String serviceScope = blankToNull(command.serviceCatalogItemId());
+        if (organizationScope == null || serviceScope == null
+            || !actor.authorities().contains("DATA_SCOPE_ORGANIZATION:" + organizationScope)
+            || !actor.authorities().contains("DATA_SCOPE_SERVICE:" + serviceScope)) {
+            audit("SLA_POLICY_WRITE_DENIED", "collection", Map.of("reason", "OUT_OF_SCOPE"));
+            throw new AccessDeniedException("SLA policy scope is not authorized");
+        }
+    }
     private void audit(String action, String id, Map<String, String> details) { CurrentUser actor = users.currentUser().orElse(new CurrentUser("system", Set.of(), "system")); audit.publish(new AuditEvent(clock.instant(), MDC.get("requestId") == null ? "system" : MDC.get("requestId"), actor.iamUserId(), action, "sla", id, details)); }
 }

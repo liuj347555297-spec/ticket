@@ -28,6 +28,7 @@ class TicketControllerTest {
     private static final String CREATE_REQUEST = """
         {
           "serviceCatalogItemId":"SC-browser-performance",
+          "serviceCatalogFormVersion":1,
           "type":"INCIDENT",
           "title":"核协 E+ 页面卡顿",
           "description":"打开工作台后响应缓慢",
@@ -52,6 +53,19 @@ class TicketControllerTest {
             .andExpect(jsonPath("$.requester.iamUserId", is("iam-u-1001")))
             .andExpect(jsonPath("$.requester.organizationName", is("信息技术部")))
             .andExpect(jsonPath("$.serviceCatalogItem.id", is("SC-browser-performance")));
+    }
+
+    @Test
+    void richDescriptionIsSanitizedAndReturnedWithItsPlainTextProjection() throws Exception {
+        String richRequest = CREATE_REQUEST.replace("\"description\":\"打开工作台后响应缓慢\"",
+            "\"description\":\"<p>打开<strong>工作台</strong>后响应缓慢</p><a href=\\\"https://kb.intra.example/case\\\" onclick=\\\"alert(1)\\\">案例</a>\",\"descriptionFormat\":\"RICH_TEXT\"");
+
+        mockMvc.perform(create("0ad3c2b1-1234-4abc-8def-123456789012", richRequest, "iam-u-1001"))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.descriptionFormat", is("RICH_TEXT")))
+            .andExpect(jsonPath("$.description", containsString("打开工作台后响应缓慢")))
+            .andExpect(jsonPath("$.descriptionHtml", containsString("<strong>工作台</strong>")))
+            .andExpect(jsonPath("$.descriptionHtml", org.hamcrest.Matchers.not(containsString("onclick"))));
     }
 
     @Test
@@ -101,6 +115,42 @@ class TicketControllerTest {
             + ",\"requesterId\":\"iam-admin\",\"priority\":\"P1\",\"status\":\"CLOSED\"}";
         mockMvc.perform(create("f4d3c2b1-1234-4abc-8def-123456789012", malicious, "iam-u-1001"))
             .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void fixedQueuesAreDerivedFromCurrentIdentityAndWorkflowTasks() throws Exception {
+        mockMvc.perform(create("a5d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/v1/tickets?queue=MY_REQUESTED").with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total", is(1)));
+        mockMvc.perform(get("/api/v1/tickets?queue=MY_TODO").with(user("iam-u-1001").roles("FIRST_LINE_SUPPORT")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total", is(1)));
+    }
+
+    @Test
+    void relatedTicketsRequireAuthorizationAtBothEndpointsAndDeduplicateReversedRelatedLinks() throws Exception {
+        String sourceId = responseId(mockMvc.perform(create("a6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        String targetId = responseId(mockMvc.perform(create("b6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST.replace("页面卡顿", "网络异常"), "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+
+        String body = "{\"targetTicketId\":\"" + targetId + "\",\"relationType\":\"RELATED\"}";
+        mockMvc.perform(post("/api/v1/tickets/{ticketId}/relations", sourceId).with(user("iam-u-1001").roles("REQUESTER")).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.relatedTicket.id", is(targetId)));
+
+        mockMvc.perform(post("/api/v1/tickets/{ticketId}/relations", targetId).with(user("iam-u-1001").roles("REQUESTER")).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"targetTicketId\":\"" + sourceId + "\",\"relationType\":\"RELATED\"}"))
+            .andExpect(status().isCreated());
+        mockMvc.perform(get("/api/v1/tickets/{ticketId}/relations", sourceId).with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.length()", is(1)));
+        mockMvc.perform(get("/api/v1/tickets/{ticketId}/relations", sourceId).with(user("iam-u-1002").roles("REQUESTER")))
+            .andExpect(status().isForbidden());
     }
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder create(String key, String body, String userId) {

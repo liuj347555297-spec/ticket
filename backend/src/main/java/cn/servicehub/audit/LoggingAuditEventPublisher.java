@@ -4,8 +4,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
-/** Transitional sink; replace with append-only persistent storage before production use. */
+/** Local development/test sink. MySQL deployments use append-only persistence instead. */
 @Component
+@org.springframework.context.annotation.Profile("!mysql")
 public class LoggingAuditEventPublisher implements AuditEventPublisher {
     private static final Logger log = LoggerFactory.getLogger(LoggingAuditEventPublisher.class);
 

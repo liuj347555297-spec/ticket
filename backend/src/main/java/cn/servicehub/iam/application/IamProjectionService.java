@@ -16,7 +16,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class IamProjectionService {
     private static final Set<String> PLATFORM_ROLES = Set.of(
-        "REQUESTER", "FIRST_LINE_SUPPORT", "SECOND_LINE_SUPPORT", "APPROVER", "SERVICE_MANAGER", "PLATFORM_ADMIN", "AUDITOR");
+        "REQUESTER", "FIRST_LINE_SUPPORT", "SECOND_LINE_SUPPORT", "APPROVER", "SERVICE_MANAGER", "SLA_MANAGER", "PLATFORM_ADMIN", "AUDITOR");
     private static final Set<String> DATA_SCOPE_TYPES = Set.of("ORGANIZATION", "SERVICE", "QUEUE", "CONFIGURATION_ITEM");
     private static final Pattern DATA_SCOPE_AUTHORITY = Pattern.compile("^DATA_SCOPE_(ORGANIZATION|SERVICE|QUEUE|CONFIGURATION_ITEM):([A-Za-z0-9._:-]{1,128})$");
 

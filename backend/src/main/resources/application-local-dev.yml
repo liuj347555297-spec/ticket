@@ -1,0 +1,7 @@
+# Never activate this profile outside a developer workstation. It is deliberately separate from
+# the default and mysql profiles so production continues to accept IAM-authenticated identities only.
+servicehub:
+  security:
+    allowed-origins:
+      - http://localhost:1525
+      - http://127.0.0.1:1525

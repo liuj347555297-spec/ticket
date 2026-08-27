@@ -1,43 +1,40 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ApiError } from '@/api/client'
-import { reportsApi, type SlaRuleSummary } from '@/api/reports'
+import { reportsApi, type SlaPolicyWriteRequest, type SlaRuleSummary } from '@/api/reports'
+import { useSessionStore } from '@/stores/session'
 
 const rules = ref<SlaRuleSummary[]>([])
+const session = useSessionStore()
 const source = ref<'api' | 'demo'>('api')
 const loading = ref(false)
+const saving = ref(false)
 const error = ref('')
+const notice = ref('')
+const showEditor = ref(false)
+const editingPolicyId = ref<string>()
+const editingVersion = ref<number>()
+const canManage = computed(() => session.authorization?.roles.some((role) => ['SLA_MANAGER', 'SERVICE_MANAGER', 'PLATFORM_ADMIN'].includes(role)) ?? false)
+const form = reactive<SlaPolicyWriteRequest>({ name: '', priority: 'P3', responseTargetMinutes: 60, resolutionTargetMinutes: 480, calendarKey: '24X7', pauseStatuses: ['ON_HOLD', 'PENDING_USER_FEEDBACK'], active: true })
 
-function duration(minutes: number): string {
-  if (minutes < 60) return `${minutes} 分钟`
-  const days = Math.floor(minutes / 1440)
-  const hours = Math.floor((minutes % 1440) / 60)
-  return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`
-}
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(value))
-}
-async function load(): Promise<void> {
-  loading.value = true; error.value = ''
-  try {
-    const result = await reportsApi.slaRules()
-    rules.value = result.data.items
-    source.value = result.source
-  } catch (cause) {
-    rules.value = []
-    error.value = cause instanceof ApiError ? cause.message : 'SLA 规则暂不可用，请检查服务端授权或稍后重试。'
-  } finally { loading.value = false }
-}
-onMounted(load)
+function duration(minutes: number): string { if (minutes < 60) return `${minutes} 分钟`; const days = Math.floor(minutes / 1440); const hours = Math.floor((minutes % 1440) / 60); return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${minutes % 60} 分` }
+function formatTime(value: string): string { return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(value)) }
+async function load(): Promise<void> { loading.value = true; error.value = ''; try { const result = await reportsApi.slaRules(); rules.value = result.data.items; source.value = result.source } catch (cause) { rules.value = []; error.value = cause instanceof ApiError ? cause.message : 'SLA 规则暂不可用，请检查服务端授权或稍后重试。' } finally { loading.value = false } }
+function resetForm(): void { editingPolicyId.value = undefined; editingVersion.value = undefined; Object.assign(form, { name: '', serviceCatalogItemId: '', priority: 'P3', organizationScopeId: '', responseTargetMinutes: 60, resolutionTargetMinutes: 480, calendarKey: '24X7', pauseStatuses: ['ON_HOLD', 'PENDING_USER_FEEDBACK'], active: true }) }
+function createPolicy(): void { resetForm(); notice.value = ''; error.value = ''; showEditor.value = true }
+function editPolicy(rule: SlaRuleSummary): void { editingPolicyId.value = rule.id; editingVersion.value = rule.version; Object.assign(form, { name: rule.name, serviceCatalogItemId: rule.serviceCatalogItemId ?? '', priority: ['P1', 'P2', 'P3', 'P4'].includes(rule.priorityLabel) ? rule.priorityLabel as SlaPolicyWriteRequest['priority'] : undefined, organizationScopeId: rule.organizationScopeId ?? '', responseTargetMinutes: rule.responseTargetMinutes, resolutionTargetMinutes: rule.resolutionTargetMinutes, calendarKey: rule.calendarName, pauseStatuses: [...rule.pauseStatusLabels], active: rule.enabled }); notice.value = ''; error.value = ''; showEditor.value = true }
+function togglePause(status: string): void { form.pauseStatuses = form.pauseStatuses.includes(status) ? form.pauseStatuses.filter((item) => item !== status) : [...form.pauseStatuses, status] }
+async function save(): Promise<void> { if (!form.name.trim() || form.responseTargetMinutes < 1 || form.resolutionTargetMinutes < form.responseTargetMinutes) { error.value = '请填写规则名称，并确保解决目标不早于响应目标。'; return }; saving.value = true; error.value = ''; notice.value = ''; try { await reportsApi.saveSlaPolicy(editingPolicyId.value, { ...form, name: form.name.trim(), serviceCatalogItemId: form.serviceCatalogItemId?.trim() || undefined, organizationScopeId: form.organizationScopeId?.trim() || undefined, expectedVersion: editingPolicyId.value ? editingVersion.value : undefined }); notice.value = editingPolicyId.value ? 'SLA 规则已更新并写入审计记录。既有工单继续使用其创建时的目标快照。' : 'SLA 规则已创建并写入审计记录；仅后续新建工单会按规则匹配。'; showEditor.value = false; await load() } catch (cause) { error.value = cause instanceof ApiError ? cause.message : 'SLA 规则保存失败；未假定规则已生效。' } finally { saving.value = false } }
+onMounted(async () => { try { await session.loadCurrentUser() } catch { /* Backend remains authoritative. */ }; await load() })
 </script>
 
 <template>
   <div class="detail-nav"><RouterLink to="/reports">← 返回运营报表</RouterLink></div>
-  <div class="page-heading"><div><h2>SLA 规则</h2><p>仅展示服务端确认当前主体可查看的已发布规则版本。</p></div><button class="button button--secondary" type="button" disabled title="编辑接口需由服务端按平台管理员权限和审批流程开放">编辑规则（预留）</button></div>
-  <p class="sla-admin-notice"><b>受控管理：</b>规则的新增、编辑、发布、停用与回滚必须由服务端执行管理员授权、双人复核、版本化和审计。前端不根据角色决定可编辑性，也不提交 SLA 时间、组织范围或发布状态。</p>
-  <p v-if="source === 'demo'" class="demo-notice">开发演示数据：仅在 API 连接失败时展示，不代表生产 SLA 配置。</p>
-  <p v-if="error" class="form-alert form-alert--error">{{ error }}</p>
-  <p v-if="loading" class="panel compact-loading">正在读取已发布 SLA 规则…</p>
-  <section v-else class="panel table-panel"><div class="panel-header"><div><h3>已发布规则</h3><p>规则详情用于运营理解；工单目标时间以服务端创建/动作时的版本快照为准。</p></div><span class="readonly-badge">只读</span></div><div class="table-scroll"><table><thead><tr><th>规则 / 目录</th><th>匹配优先级</th><th>响应目标</th><th>解决目标</th><th>风险阈值</th><th>服务日历</th><th>暂停状态</th><th>版本</th><th>状态</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><span class="table-subtext">{{ rule.serviceCatalogItemName }} · {{ rule.id }}</span></td><td><span class="tag" :class="rule.priorityLabel === 'P1' ? 'tag--red' : 'tag--blue'">{{ rule.priorityLabel }}</span></td><td>{{ duration(rule.responseTargetMinutes) }}</td><td>{{ duration(rule.resolutionTargetMinutes) }}</td><td>{{ rule.riskThresholdMinutes ? duration(rule.riskThresholdMinutes) : '服务端未返回' }}</td><td>{{ rule.calendarName }}</td><td><span v-for="state in rule.pauseStatusLabels" :key="state" class="tag tag--muted sla-pause-tag">{{ state }}</span></td><td>v{{ rule.version }}<span class="table-subtext">{{ formatTime(rule.publishedAt) }}</span></td><td><span class="tag" :class="rule.enabled ? 'tag--green' : 'tag--muted'">{{ rule.enabled ? '生效中' : '已停用' }}</span></td></tr></tbody></table></div><p v-if="!rules.length" class="compact-empty">暂无当前数据范围内可查看的已发布 SLA 规则。</p></section>
+  <div class="page-heading"><div><h2>SLA 规则</h2><p>仅展示服务端确认当前主体可查看的规则版本。</p></div><button v-if="canManage" class="button button--primary" type="button" @click="createPolicy">新建 SLA 规则</button></div>
+  <p class="sla-admin-notice"><b>受控管理：</b>规则新增、编辑、停用均由后端执行管理员授权、乐观锁与审计。浏览器只提交白名单字段，既有工单继续使用创建时的 SLA 目标快照。</p>
+  <p v-if="source === 'demo'" class="demo-notice">开发演示数据：仅在 API 连接失败时展示，不代表生产 SLA 配置。</p><p v-if="notice" class="form-alert form-alert--success">{{ notice }}</p><p v-if="error" class="form-alert form-alert--error">{{ error }}</p>
+  <p v-if="loading" class="panel compact-loading">正在读取 SLA 规则…</p>
+  <section v-else class="panel table-panel"><div class="panel-header"><div><h3>规则列表</h3><p>工单目标时间以服务端创建/动作时的版本快照为准。</p></div><span class="readonly-badge">{{ canManage ? '受控编辑' : '只读' }}</span></div><div class="table-scroll"><table><thead><tr><th>规则 / 目录</th><th>匹配优先级</th><th>响应目标</th><th>解决目标</th><th>服务日历</th><th>暂停状态</th><th>版本</th><th>状态</th><th v-if="canManage">操作</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><span class="table-subtext">{{ rule.serviceCatalogItemName }} · {{ rule.id }}</span></td><td><span class="tag" :class="rule.priorityLabel === 'P1' ? 'tag--red' : 'tag--blue'">{{ rule.priorityLabel }}</span></td><td>{{ duration(rule.responseTargetMinutes) }}</td><td>{{ duration(rule.resolutionTargetMinutes) }}</td><td>{{ rule.calendarName }}</td><td><span v-for="state in rule.pauseStatusLabels" :key="state" class="tag tag--muted sla-pause-tag">{{ state }}</span></td><td>v{{ rule.version }}<span class="table-subtext">{{ formatTime(rule.publishedAt) }}</span></td><td><span class="tag" :class="rule.enabled ? 'tag--green' : 'tag--muted'">{{ rule.enabled ? '生效中' : '已停用' }}</span></td><td v-if="canManage"><button class="button button--secondary" type="button" @click="editPolicy(rule)">编辑</button></td></tr></tbody></table></div><p v-if="!rules.length" class="compact-empty">暂无当前数据范围内可查看的 SLA 规则。</p></section>
+  <section v-if="showEditor" class="panel form-panel"><div class="panel-header"><div><h3>{{ editingPolicyId ? '编辑 SLA 规则' : '新建 SLA 规则' }}</h3><p>后端会重新校验当前角色与规则版本；不得通过此页面修改既有工单的 SLA。</p></div></div><form class="form-grid" @submit.prevent="save"><label class="field"><span>规则名称 <b>*</b></span><input v-model.trim="form.name" maxlength="120" required /></label><label class="field"><span>优先级</span><select v-model="form.priority"><option :value="undefined">全部优先级</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option></select></label><label class="field"><span>服务目录 ID</span><input v-model.trim="form.serviceCatalogItemId" maxlength="64" placeholder="留空表示全部目录" /></label><label class="field"><span>组织范围 IAM ID</span><input v-model.trim="form.organizationScopeId" maxlength="128" placeholder="留空表示全部授权组织" /></label><label class="field"><span>响应目标（分钟）<b>*</b></span><input v-model.number="form.responseTargetMinutes" type="number" min="1" max="10080" required /></label><label class="field"><span>解决目标（分钟）<b>*</b></span><input v-model.number="form.resolutionTargetMinutes" type="number" min="1" max="43200" required /></label><label class="field"><span>服务日历</span><select v-model="form.calendarKey"><option value="24X7">24X7</option></select></label><div class="field"><span>允许暂停的状态</span><div class="checkbox-field"><label><input type="checkbox" :checked="form.pauseStatuses.includes('ON_HOLD')" @change="togglePause('ON_HOLD')" /> 挂起</label><label><input type="checkbox" :checked="form.pauseStatuses.includes('PENDING_USER_FEEDBACK')" @change="togglePause('PENDING_USER_FEEDBACK')" /> 待用户反馈</label></div></div><label class="field field--full checkbox-field"><input v-model="form.active" type="checkbox" /> 此规则生效（停用后不再匹配后续新单）</label><div class="form-actions"><button class="button button--secondary" type="button" :disabled="saving" @click="showEditor = false">取消</button><button class="button button--primary" type="submit" :disabled="saving">{{ saving ? '保存中…' : '保存受控规则' }}</button></div></form></section>
 </template>

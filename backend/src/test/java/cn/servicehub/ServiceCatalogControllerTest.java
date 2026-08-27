@@ -57,14 +57,14 @@ class ServiceCatalogControllerTest {
     @Test
     void ticketCreationRejectsUnknownCatalogFieldsAndIllegalDictionaryOptions() throws Exception {
         mockMvc.perform(create("""
-            {"serviceCatalogItemId":"SC-browser-performance","type":"INCIDENT","title":"页面很慢","description":"描述足够长",
+            {"serviceCatalogItemId":"SC-browser-performance","serviceCatalogFormVersion":1,"type":"INCIDENT","title":"页面很慢","description":"描述足够长",
              "structuredFields":{"browser":"Safari","serverPriority":"P1"},"tags":[]}
             """))
             .andExpect(status().isBadRequest())
             .andExpect(jsonPath("$.code", is("SERVICE_CATALOG_INVALID")));
 
         mockMvc.perform(create("""
-            {"serviceCatalogItemId":"unpublished-or-unknown","type":"INCIDENT","title":"页面很慢","description":"描述足够长",
+            {"serviceCatalogItemId":"unpublished-or-unknown","serviceCatalogFormVersion":1,"type":"INCIDENT","title":"页面很慢","description":"描述足够长",
              "structuredFields":{},"tags":[]}
             """))
             .andExpect(status().isBadRequest())

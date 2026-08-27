@@ -6,6 +6,7 @@ info:
     Vue 3 门户与 Spring Boot 单体服务的共享 v1 契约。所有业务 API 都由服务端执行对象级、流程动作和数据范围鉴权；UI 隐藏不是授权控制。
     附件与知识库文档必须先进入隔离区，完成服务端白名单校验和恶意文件扫描后才可下载、索引或发布。消息仅通过受控站内信和受管通道适配器投递；不得以通用回调、任意 URL 或客户端指定收件人替代。
     本版本不包含 AI、向量检索、自动生成、自动问答或自动处置能力。
+    外部监控、CMDB、日志与 APM 仅通过受管连接器集成；本版本不实现自建监控平台、eBPF、自动发现 CMDB 或数据库运维平台。
 servers:
   - url: /api/v1
     description: 同源网关路径
@@ -13,6 +14,7 @@ tags:
   - name: System
   - name: Identity
   - name: IdentitySync
+  - name: BackofficeAccessAdmin
   - name: Security
   - name: Tickets
   - name: Workflow
@@ -31,6 +33,11 @@ tags:
   - name: SlaAdmin
   - name: OperationsReporting
   - name: OperationsReportingAdmin
+  - name: Integrations
+  - name: IntegrationAdmin
+  - name: Cmdb
+  - name: Alerts
+  - name: Observability
 paths:
   /health:
     get:
@@ -365,13 +372,69 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/relations:
+    get:
+      tags: [Tickets]
+      summary: 查询当前主体可见的关联工单
+      description: |
+        先校验当前工单，再对每一张关联目标重新执行对象读取授权；无权目标不得以编号、标题、数量或错误信息泄露存在性。
+        关系不改变工单状态、审批、处理人或 SLA。
+      operationId: listTicketRelations
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 当前主体可见的受控关系
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketRelation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Tickets]
+      summary: 建立受控工单关系
+      description: |
+        调用者必须具有源单修改权和目标单读取权。客户端仅提交目标编号和受控关系类型，不能提交目标摘要、组织范围、审批结论或状态。
+        同一关系按自然键去重；`RELATED` 由服务端规范化为无方向关系。
+      operationId: createTicketRelation
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketRelationRequest'
+      responses:
+        '201':
+          description: 关系已创建或安全幂等确认
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketRelation'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /tickets/{ticketId}/work-actions:
     post:
       tags: [Collaboration]
       summary: 执行转办、协办、抢单、主办指定或交接班
       description: |
         覆盖转办、添加/移除协办、抢单、指定主办与交接班。targetIamUserId 仅是候选目标，
-        服务端必须验证该人员 IAM 投影有效、班次/技能/队列/组织数据范围、当前任务候选资格和审批要求；
+        服务端必须验证该人员 IAM 用户投影与平台角色投影均为活动状态、班次/技能/队列/组织数据范围、当前任务候选资格和审批要求；
         不能通过请求体变更提交人、角色、队列、流程受让人或历史身份快照。
       operationId: executeTicketWorkAction
       x-replay-protection: subject-operation-ticket-request-fingerprint
@@ -524,6 +587,189 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/workflow:
+    get:
+      tags: [Workflow]
+      summary: 获取当前授权主体的工单工作流概览
+      description: 统一返回平台工作流投影、活动任务、协作人员快照、审批申请与服务端计算的可用动作。`controlledJumpActions` 仅会向服务经理或平台管理员返回，且只是显示能力；预演和执行仍在提交时重新执行对象授权、角色、审批、版本与节点校验。读取不授予写权限。
+      operationId: getTicketWorkflowOverview
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 当前主体有权查看的工作流读模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkflowOverviewReadModel'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /workflow/approval-tasks:
+    get:
+      tags: [Workflow]
+      summary: 查询当前身份的 Flowable 审批待办
+      description: |
+        仅服务经理或平台管理员可调用。服务端以当前 IAM 角色查询仍处于活动状态的 Flowable 候选任务，
+        再逐项校验关联工单的数据范围；业务审批投影本身不构成待办或授权依据。申请人可看到自己发起的候选任务，
+        但 `canDecide=false`，且决策接口会再次拒绝自审。响应不返回全局总数，避免通过计数推断无权任务。
+      operationId: listFlowableApprovalTasks
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: 当前授权主体可见的实时审批任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalTaskInbox'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /workflow/definitions:
+    get:
+      tags: [Workflow]
+      summary: 查询平台已部署的流程定义版本
+      description: 仅平台管理员可读取，用于发布核验和运行实例版本追溯。该接口只返回平台随受控应用包部署的最新 Flowable 定义元数据，不提供 BPMN 上传、部署、覆盖或任意跳转能力。
+      operationId: listPublishedWorkflowDefinitions
+      responses:
+        '200':
+          description: 平台拥有的最新流程定义版本
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkflowProcessDefinition'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /tickets/{ticketId}/workflow/actions:
+    post:
+      tags: [Workflow]
+      summary: 提交服务端受控的工单流程动作
+      description: 客户端仅可提交动作意图和受限输入；状态、节点、候选人、组织范围、SLA 与通知收件人均由服务端重新计算。`CONTROLLED_JUMP_REQUEST` 只创建 Flowable 审批实例，不执行节点迁移。
+      operationId: executeTicketWorkflowAction
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowIfMatch'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkflowActionRequest'
+      responses:
+        '200':
+          description: 动作已提交并返回最新工单投影
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/workflow/approval-requests/{requestId}/decisions:
+    post:
+      tags: [Workflow]
+      summary: 对受控跳转 Flowable 审批任务作出决策
+      description: 仅服务经理或平台管理员候选角色可处理，且申请人不得自审。服务端先完成独立 Flowable 用户任务，再原子更新审批投影和审计；通过并不等于执行迁移。
+      operationId: decideControlledJumpApproval
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowApprovalRequestId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: 独立审批流程已完成，返回审批投影
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlledJumpApprovalProjection'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/workflow/approval-requests/{requestId}/preflight:
+    get:
+      tags: [Workflow]
+      summary: 只读预演已通过的受控跳转
+      description: 仅服务经理或平台管理员可调用。验证审批结论、申请时的工单/流程版本、当前源节点与发布白名单，并返回任务处置、候选人、SLA 和通知重算计划。任何门禁失败均不改变 Flowable、工单、SLA 或通知。
+      operationId: preflightControlledJumpExecution
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowApprovalRequestId'
+      responses:
+        '200':
+          description: 预演结论（`executable=false` 仍是正常受控响应）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlledJumpPreflight'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tickets/{ticketId}/workflow/approval-requests/{requestId}/execute:
+    post:
+      tags: [Workflow]
+      summary: 执行已获批且预演通过的受控跳转
+      description: 仅服务经理或平台管理员可调用。服务端以审批申请状态、申请时版本、对象授权和当前节点为门禁，先原子保留执行权，再在同一事务内迁移 Flowable、取消旧任务、创建新投影、重算 SLA/收件人、写入执行结果和审计。重复调用或版本变化返回冲突。
+      operationId: executeApprovedControlledJump
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowApprovalRequestId'
+        - $ref: '#/components/parameters/WorkflowIfMatch'
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: 已执行并返回最新工单投影
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /tickets/{ticketId}/controlled-jump-requests:
     post:
       tags: [Workflow]
@@ -1686,6 +1932,71 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /admin/backoffice-access/{iamUserId}:
+    get:
+      tags: [BackofficeAccessAdmin]
+      summary: 查询 IAM 用户的后台授权记录
+      description: |
+        仅平台管理员可调用。路径 IAM ID 只能定位已同步且启用的 IAM 用户；返回身份只读摘要及本地后台启停、角色、数据范围与版本。
+        未配置后台授权不代表 IAM 用户不可登录前台，而是只具有普通提单人能力。不得通过此接口编辑 IAM 主数据或枚举人员目录。
+      operationId: getBackofficeAccess
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      parameters:
+        - name: iamUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      responses:
+        '200':
+          description: 已校验 IAM 身份的后台授权摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackofficeAccessResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [BackofficeAccessAdmin]
+      summary: 替换 IAM 用户的后台角色与数据范围
+      description: |
+        仅平台管理员可调用。服务端以已认证管理员身份审计，并校验 IAM 用户状态、乐观锁、角色白名单、数据范围格式、禁止自我提权和最后平台管理员保护。
+        请求不得提交或修改密码、令牌、姓名、登录名、组织、岗位或任意 IAM 主数据；IAM ID 只是已验证 SSO 主体的绑定键，不能作为登录凭据。
+      operationId: replaceBackofficeAccess
+      x-required-platform-roles: [PLATFORM_ADMIN]
+      parameters:
+        - name: iamUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackofficeAccessUpdateRequest'
+      responses:
+        '200':
+          description: 已持久化且已审计的后台授权版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackofficeAccessResponse'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /admin/sla/policies:
     get:
       tags: [SlaAdmin]
@@ -2181,6 +2492,373 @@ paths:
           $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /admin/integrations/connections:
+    get:
+      tags: [IntegrationAdmin]
+      summary: 查询外部集成连接的脱敏只读状态
+      description: |
+        仅返回当前管理范围内受管连接的连接类型、启用状态、最后健康检查和脱敏错误码；不返回端点、租户、密钥、secretRef 值、签名材料、
+        原始回执或外部对象标识。本版本仅集成既有监控、CMDB、日志与 APM，不实现自建监控、eBPF、自动发现 CMDB 或数据库运维平台。
+      operationId: listIntegrationConnectionStatuses
+      x-required-platform-roles: [INTEGRATION_ADMIN, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 已按集成管理范围过滤的连接状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationConnectionStatusPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/integrations/connections/{integrationConnectionCode}/status:
+    get:
+      tags: [IntegrationAdmin]
+      summary: 查询单个连接的脱敏状态
+      description: 连接编码仅用于定位；服务端按当前管理范围重新授权。只返回受控健康/版本摘要，绝不将该接口作为连通性探测、SSRF 代理或端点枚举工具。
+      operationId: getIntegrationConnectionStatus
+      x-required-platform-roles: [INTEGRATION_ADMIN, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/IntegrationConnectionCode'
+      responses:
+        '200':
+          description: 已授权受管连接状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationConnectionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/integrations/connections/{integrationConnectionCode}/configuration-drafts:
+    put:
+      tags: [IntegrationAdmin]
+      summary: 更新外部集成连接配置草稿
+      description: |
+        管理员只能提交受管密钥服务中的 `secretRef` 与启用意图；不接受任何明文密钥、端点、协议、代理、请求头、回调 URL、租户、
+        自定义脚本或连接器类型。连接器允许地址、TLS、超时、回调路由和字段映射均由部署受控配置固定。保存仅创建草稿，不能立即影响出站/入站流量。
+      operationId: upsertIntegrationConnectionConfigurationDraft
+      x-required-platform-roles: [INTEGRATION_ADMIN, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-integration-connection-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/IntegrationConnectionCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntegrationConnectionConfigurationDraftRequest'
+      responses:
+        '200':
+          description: 连接配置草稿已保存并审计，尚未生效
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationConnectionConfigurationDraft'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/integrations/connections/{integrationConnectionCode}/publish-requests:
+    post:
+      tags: [IntegrationAdmin]
+      summary: 提交外部集成连接配置发布审核
+      description: |
+        服务端冻结草稿并验证 secretRef 是受管引用、连接器类型匹配、最小权限和出入站网络策略，随后创建双人复核/审批。
+        申请人与审批人不得为同一主体；审批通过前连接配置不生效，审计员只读且不能发布。
+      operationId: requestIntegrationConnectionConfigurationPublication
+      x-required-platform-roles: [INTEGRATION_ADMIN, PLATFORM_ADMIN]
+      x-replay-protection: subject-operation-integration-connection-publication-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/IntegrationConnectionCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntegrationConnectionPublicationRequest'
+      responses:
+        '202':
+          description: 配置发布审核已创建，尚未启用连接。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationConnectionPublicationRequestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /cmdb/configuration-items:
+    get:
+      tags: [Cmdb]
+      summary: 在当前数据范围检索 CMDB 配置项
+      description: |
+        只查询受管 CMDB 连接同步的只读投影；不得通过名称、CI ID、分页、组织筛选或关键字枚举无权配置项。
+        平台不在此接口修改 CMDB，不支持自动发现；CMDB ID 仅作定位，不能作为工单关联、告警关联或深链接的授权证明。
+      operationId: listConfigurationItems
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: type
+          in: query
+          schema:
+            type: string
+            maxLength: 64
+      responses:
+        '200':
+          description: 已按当前数据范围过滤的 CMDB CI 摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationItemPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /cmdb/configuration-items/{configurationItemId}:
+    get:
+      tags: [Cmdb]
+      summary: 查看单个 CMDB 配置项的受控摘要
+      description: 服务端逐对象检查当前主体数据范围和 CI 可见性；无权时按防枚举策略处理，不返回原始 CMDB 载荷、凭据、网络地址或隐藏关联。
+      operationId: getConfigurationItem
+      parameters:
+        - $ref: '#/components/parameters/ConfigurationItemId'
+      responses:
+        '200':
+          description: 已授权配置项摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigurationItem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tickets/{ticketId}/configuration-items:
+    get:
+      tags: [Cmdb]
+      summary: 查询工单已关联的配置项
+      description: 先校验工单对象权限，再逐条校验 CI 当前可见性；不能因已存在历史关联而泄露调岗后无权的 CI 详情。
+      operationId: listTicketConfigurationItemAssociations
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 已授权工单的可见 CI 关联
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketConfigurationItemAssociationPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Cmdb]
+      summary: 关联已授权 CMDB 配置项至工单
+      description: 服务端同时验证工单动作权限、CI 当前可见性、服务/组织范围、关联策略及重复关系；客户端不能设置 CI 详情、影响范围、CMDB 来源或关联审批结论。
+      operationId: createTicketConfigurationItemAssociation
+      x-replay-protection: subject-ticket-configuration-item-association-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketConfigurationItemAssociationRequest'
+      responses:
+        '201':
+          description: CI 关联已创建并审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketConfigurationItemAssociation'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /integrations/alerts/events:
+    post:
+      tags: [Alerts]
+      summary: 接收受管监控平台告警事件
+      description: |
+        仅允许已发布且启用的受管监控连接调用。服务端按固定连接器验证签名、来源网络、时间窗、事件唯一键和请求体摘要；
+        禁止把该接口当作通用 webhook、任意 URL 回调、告警/CI 写入代理或内部网络探针。签名失败、来源不匹配、时间超窗、重放、未知字段或连接禁用均拒绝并审计。
+      operationId: ingestExternalAlertEvent
+      security:
+        - integrationCallbackSignature: []
+      x-replay-protection: connection-event-id-timestamp-body-digest
+      parameters:
+        - $ref: '#/components/parameters/IntegrationCallbackTimestamp'
+        - $ref: '#/components/parameters/IntegrationCallbackEventId'
+        - $ref: '#/components/parameters/IntegrationCallbackSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExternalAlertEvent'
+      responses:
+        '202':
+          description: 告警事件已受控接收或已幂等确认；不表示已关联工单。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalAlertIngestResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: 查询当前数据范围内的已接入告警
+      description: 告警列表按当前主体组织、服务、CI 和工单关系过滤；不返回供应商原始正文、完整日志、端点、凭据、签名或其他范围告警。
+      operationId: listAlerts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: state
+          in: query
+          schema:
+            $ref: '#/components/schemas/AlertLifecycleState'
+        - name: configurationItemId
+          in: query
+          schema:
+            type: string
+            maxLength: 128
+      responses:
+        '200':
+          description: 已授权告警摘要
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /tickets/{ticketId}/alerts:
+    get:
+      tags: [Alerts]
+      summary: 查询工单关联的告警状态
+      description: 先验证工单权限，再按告警当前可见性过滤；关联状态、影响等级和关闭时间均由服务端/受管连接器决定，不能由客户端伪造。
+      operationId: listTicketAlertAssociations
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 已授权工单的关联告警状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketAlertAssociationPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Alerts]
+      summary: 关联已授权告警至工单
+      description: 服务端验证工单动作权限、告警/CI 当前可见性、状态、来源连接和关联策略；关联不执行外部监控写回、关闭告警或自动推进工单。
+      operationId: createTicketAlertAssociation
+      x-replay-protection: subject-ticket-alert-association-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketAlertAssociationRequest'
+      responses:
+        '201':
+          description: 告警关联已创建并审计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketAlertAssociation'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/observability-links:
+    get:
+      tags: [Observability]
+      summary: 获取受信任日志与 APM 深链接
+      description: |
+        服务端仅根据已授权工单、关联 CI/告警和部署受管的固定链接模板生成深链接；不接受或回显客户端 URL、查询参数、时间范围、索引、主机、协议或跳转目标。
+        每次生成与访问都需重新执行对象级授权；链接不得携带密码、令牌、签名、Cookie、内部地址或开放重定向参数，且不会成为访问日志/APM 原始数据的越权通道。
+      operationId: listTicketObservabilityLinks
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: 当前主体可使用的服务端生成可信深链接
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservabilityDeepLinkPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   securitySchemes:
     sessionCookie:
@@ -2188,6 +2866,11 @@ components:
       in: cookie
       name: SERVICEHUB_SESSION
       description: 由 Spring Boot 维护的 HttpOnly、Secure、SameSite 会话 Cookie；浏览器不得将访问令牌写入 localStorage。
+    integrationCallbackSignature:
+      type: apiKey
+      in: header
+      name: X-Integration-Signature
+      description: 仅受管连接器回调使用的签名头。服务端必须基于受管 secretRef、原始请求体、时间戳和事件 ID 验签；该头不是用户会话或通用 API 密钥。
   parameters:
     CsrfToken:
       name: X-CSRF-Token
@@ -2216,6 +2899,65 @@ components:
       schema:
         type: string
         pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+    WorkflowApprovalRequestId:
+      name: requestId
+      in: path
+      required: true
+      description: 受控跳转审批申请 UUID；只用于定位，不能替代当前工单、审批候选资格或数据范围授权。
+      schema:
+        type: string
+        format: uuid
+    WorkflowIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: 当前工单版本的 HTTP 强实体标签；必须使用双引号包裹，例如 `"0"`。服务端以此执行乐观锁并拒绝过期页面或重复执行。
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+        example: '"0"'
+    IntegrationConnectionCode:
+      name: integrationConnectionCode
+      in: path
+      required: true
+      description: 预注册的受管连接器编码；不得由请求指定连接器类型、端点、协议或回调地址。
+      schema:
+        type: string
+        pattern: '^[A-Z][A-Z0-9_]{2,62}$'
+    ConfigurationItemId:
+      name: configurationItemId
+      in: path
+      required: true
+      description: CMDB CI 投影定位符；服务端仍须执行当前数据范围和 CI 可见性校验。
+      schema:
+        type: string
+        pattern: '^CI-[A-Za-z0-9_-]{8,64}$'
+    IntegrationCallbackTimestamp:
+      name: X-Integration-Timestamp
+      in: header
+      required: true
+      description: 由受管发送方签名的 UTC 时间戳；服务端仅接受受控时间窗内的请求。
+      schema:
+        type: string
+        format: date-time
+    IntegrationCallbackEventId:
+      name: X-Integration-Event-Id
+      in: header
+      required: true
+      description: 受管发送方的事件唯一键，与连接、时间戳、原始载荷摘要共同用于重放防护和幂等。
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    IntegrationCallbackSignature:
+      name: X-Integration-Signature
+      in: header
+      required: true
+      description: 回调签名；服务端恒定时间验签，禁止记录或回显该值。
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 1024
     AttachmentId:
       name: attachmentId
       in: path
@@ -4121,6 +4863,414 @@ components:
         kind:
           type: string
           enum: [STANDARD, FREE]
+    IntegrationConnectionType:
+      type: string
+      enum: [CMDB, MONITORING, LOG_PLATFORM, APM]
+    IntegrationConnectionHealthState:
+      type: string
+      enum: [DISABLED, CONFIGURATION_PENDING, HEALTHY, DEGRADED, UNAVAILABLE]
+    IntegrationConnectionStatus:
+      type: object
+      additionalProperties: false
+      required: [connectionCode, type, enabled, healthState, observedAt]
+      properties:
+        connectionCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{2,62}$'
+        type:
+          $ref: '#/components/schemas/IntegrationConnectionType'
+        enabled:
+          type: boolean
+        healthState:
+          $ref: '#/components/schemas/IntegrationConnectionHealthState'
+        activeConfigurationVersion:
+          type: integer
+          minimum: 1
+          description: 仅在已发布配置生效时返回；不包含配置内容或 secretRef。
+        observedAt:
+          type: string
+          format: date-time
+        diagnosticCode:
+          type: string
+          maxLength: 80
+          description: 脱敏健康原因码；不包含端点、网络地址、凭据、原始回执或堆栈。
+    IntegrationConnectionStatusPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IntegrationConnectionStatus'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    IntegrationConnectionConfigurationDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [secretRef, enabled, version, reason]
+      x-server-enforced:
+        - integration-management-scope-authorization
+        - managed-secret-reference-validation
+        - deployment-controlled-connector-and-network-policy
+        - draft-only-no-immediate-activation
+        - immutable-audit-event
+      properties:
+        secretRef:
+          type: string
+          minLength: 3
+          maxLength: 128
+          pattern: '^[A-Za-z0-9._:-]+$'
+          description: 仅允许受管密钥服务的逻辑引用，绝不能是明文密钥、文件路径、URL、环境变量表达式或可由浏览器解析的定位信息；服务端不在任何响应中回显。
+        enabled:
+          type: boolean
+          description: 仅表示草稿启用意图；实际启用须经发布审核后由服务端执行。
+        version:
+          type: integer
+          minimum: 0
+          description: 草稿乐观锁版本。客户端不能指定已发布版本或覆盖并发修改。
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    IntegrationConnectionConfigurationDraft:
+      type: object
+      additionalProperties: false
+      required: [connectionCode, version, enabled, lifecycleState, hasSecretReference, auditEventId]
+      properties:
+        connectionCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{2,62}$'
+        version:
+          type: integer
+          minimum: 1
+        enabled:
+          type: boolean
+        lifecycleState:
+          type: string
+          enum: [DRAFT, PENDING_REVIEW, PUBLISHED, REJECTED, SUPERSEDED]
+        hasSecretReference:
+          type: boolean
+          description: 仅报告是否存在有效受管引用，不回显 secretRef 或其路径。
+        auditEventId:
+          type: string
+          maxLength: 128
+    IntegrationConnectionPublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 4
+          maxLength: 500
+    IntegrationConnectionPublicationRequestResult:
+      type: object
+      additionalProperties: false
+      required: [publishRequestId, connectionCode, frozenVersion, lifecycleState, approvalTaskId, auditEventId]
+      properties:
+        publishRequestId:
+          type: string
+          pattern: '^INCP-[A-Za-z0-9_-]{8,64}$'
+        connectionCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]{2,62}$'
+        frozenVersion:
+          type: integer
+          minimum: 1
+        lifecycleState:
+          type: string
+          const: PENDING_REVIEW
+        approvalTaskId:
+          type: string
+          maxLength: 128
+        auditEventId:
+          type: string
+          maxLength: 128
+    ConfigurationItemSummary:
+      type: object
+      additionalProperties: false
+      required: [id, name, type]
+      properties:
+        id:
+          type: string
+          pattern: '^CI-[A-Za-z0-9_-]{8,64}$'
+        name:
+          type: string
+          maxLength: 200
+        type:
+          type: string
+          maxLength: 64
+    ConfigurationItem:
+      type: object
+      additionalProperties: false
+      required: [id, name, type, lifecycleState, projectionUpdatedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^CI-[A-Za-z0-9_-]{8,64}$'
+        name:
+          type: string
+          maxLength: 200
+        type:
+          type: string
+          maxLength: 64
+        lifecycleState:
+          type: string
+          enum: [ACTIVE, INACTIVE, RETIRED]
+        serviceCatalogItemIds:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            maxLength: 64
+        projectionUpdatedAt:
+          type: string
+          format: date-time
+    ConfigurationItemPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigurationItemSummary'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    TicketConfigurationItemAssociationRequest:
+      type: object
+      additionalProperties: false
+      required: [configurationItemId, version, reason]
+      properties:
+        configurationItemId:
+          type: string
+          pattern: '^CI-[A-Za-z0-9_-]{8,64}$'
+        version:
+          type: integer
+          minimum: 0
+          description: 工单乐观锁版本。
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    TicketConfigurationItemAssociation:
+      type: object
+      additionalProperties: false
+      required: [configurationItem, associatedAt, associatedBy, auditEventId]
+      properties:
+        configurationItem:
+          $ref: '#/components/schemas/ConfigurationItemSummary'
+        associatedAt:
+          type: string
+          format: date-time
+        associatedBy:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        auditEventId:
+          type: string
+          maxLength: 128
+    TicketConfigurationItemAssociationPage:
+      type: object
+      additionalProperties: false
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TicketConfigurationItemAssociation'
+        total:
+          type: integer
+          minimum: 0
+    AlertLifecycleState:
+      type: string
+      enum: [OPEN, ACKNOWLEDGED, RESOLVED, SUPPRESSED]
+    AlertSeverity:
+      type: string
+      enum: [CRITICAL, HIGH, MEDIUM, LOW, INFO]
+    ExternalAlertEvent:
+      type: object
+      additionalProperties: false
+      required: [sourceAlertKey, occurredAt, state, severity, summary]
+      x-server-enforced:
+        - fixed-connector-source-and-signature-validation
+        - timestamp-window-and-replay-protection
+        - trusted-cmdb-reference-resolution
+        - no-external-writeback-or-workflow-transition
+        - immutable-audit-event
+      properties:
+        sourceAlertKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 由已认证受管连接器使用的事件键；与连接、时间窗和载荷摘要绑定，不能跨连接复用。
+        occurredAt:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/AlertLifecycleState'
+        severity:
+          $ref: '#/components/schemas/AlertSeverity'
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: 纯文本脱敏摘要；不得包含日志正文、凭据、令牌、网络地址或任意 URL。
+        sourceConfigurationItemKey:
+          type: string
+          maxLength: 128
+          description: 仅由服务端在固定受管 CMDB 映射中解析，不可借此创建、覆盖或越权关联 CI。
+    ExternalAlertIngestResult:
+      type: object
+      additionalProperties: false
+      required: [accepted, resultCode, auditEventId]
+      properties:
+        accepted:
+          type: boolean
+        resultCode:
+          type: string
+          enum: [ACCEPTED, DUPLICATE_IGNORED]
+        alertId:
+          type: string
+          pattern: '^ALT-[A-Za-z0-9_-]{8,64}$'
+        auditEventId:
+          type: string
+          maxLength: 128
+    Alert:
+      type: object
+      additionalProperties: false
+      required: [id, state, severity, summary, occurredAt, receivedAt]
+      properties:
+        id:
+          type: string
+          pattern: '^ALT-[A-Za-z0-9_-]{8,64}$'
+        state:
+          $ref: '#/components/schemas/AlertLifecycleState'
+        severity:
+          $ref: '#/components/schemas/AlertSeverity'
+        summary:
+          type: string
+          maxLength: 500
+        configurationItem:
+          $ref: '#/components/schemas/ConfigurationItemSummary'
+        occurredAt:
+          type: string
+          format: date-time
+        receivedAt:
+          type: string
+          format: date-time
+    AlertPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Alert'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+    TicketAlertAssociationRequest:
+      type: object
+      additionalProperties: false
+      required: [alertId, version, reason]
+      properties:
+        alertId:
+          type: string
+          pattern: '^ALT-[A-Za-z0-9_-]{8,64}$'
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    TicketAlertAssociation:
+      type: object
+      additionalProperties: false
+      required: [alert, associatedAt, associatedBy, auditEventId]
+      properties:
+        alert:
+          $ref: '#/components/schemas/Alert'
+        associatedAt:
+          type: string
+          format: date-time
+        associatedBy:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        auditEventId:
+          type: string
+          maxLength: 128
+    TicketAlertAssociationPage:
+      type: object
+      additionalProperties: false
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/TicketAlertAssociation'
+        total:
+          type: integer
+          minimum: 0
+    ObservabilityLinkType:
+      type: string
+      enum: [LOGS, APM]
+    ObservabilityDeepLink:
+      type: object
+      additionalProperties: false
+      required: [type, label, targetUrl, expiresAt]
+      properties:
+        type:
+          $ref: '#/components/schemas/ObservabilityLinkType'
+        label:
+          type: string
+          maxLength: 100
+        targetUrl:
+          type: string
+          format: uri-reference
+          maxLength: 2000
+          description: 服务端按固定受信任基址、固定内部路径和已授权资源生成的短时深链接；不含密钥、令牌、Cookie、任意外部 URL 或开放跳转参数。
+        expiresAt:
+          type: string
+          format: date-time
+    ObservabilityDeepLinkPage:
+      type: object
+      additionalProperties: false
+      required: [items, generatedAt]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ObservabilityDeepLink'
+        generatedAt:
+          type: string
+          format: date-time
     AttachmentPurpose:
       type: string
       enum: [TICKET_EVIDENCE, USER_FEEDBACK, HANDOVER_CHECKLIST, OTHER]
@@ -4458,8 +5608,13 @@ components:
           maxLength: 200
         description:
           type: string
-          maxLength: 4000
-          description: 自然语言补充；服务端清洗、脱敏和长度校验。
+          maxLength: 16000
+          description: 纯文本，或 `descriptionFormat=RICH_TEXT` 时的编辑器 HTML。服务端只存储白名单清洗后的 HTML 与派生纯文本摘要。
+        descriptionFormat:
+          type: string
+          enum: [PLAIN_TEXT, RICH_TEXT]
+          default: PLAIN_TEXT
+          description: RICH_TEXT 仅允许平台规定的 TipTap 子集；脚本、样式、图片、嵌入内容与非 HTTP(S) 链接均会被拒绝或移除。
         structuredFields:
           $ref: '#/components/schemas/FormData'
         tags:
@@ -4577,7 +5732,7 @@ components:
         targetIamUserId:
           type: string
           maxLength: 128
-          description: 转办、增加/移除协办、指定主办、交接班或请求会签的候选目标；抢单时忽略，服务端以当前主体为候选人。服务端验证其为当前流程/服务范围内有效候选人。
+          description: 转办、增加/移除协办、指定主办、交接班或请求会签的候选目标；抢单时忽略，服务端以当前主体为候选人。服务端验证其为活动 IAM 用户、具备动作所需的活动平台角色，并属于当前流程/服务范围内有效候选人。
         structuredFields:
           type: object
           minProperties: 1
@@ -4814,6 +5969,504 @@ components:
         total:
           type: integer
           minimum: 0
+    WorkflowActionRequest:
+      type: object
+      additionalProperties: false
+      required: [action]
+      x-server-enforced:
+        - ticket-object-authorization
+        - server-calculated-state-node-assignment-sla-and-notification-recipients
+        - ticket-optimistic-lock
+        - immutable-audit-event
+      properties:
+        action:
+          type: string
+          enum: [CLASSIFY, ASSIGN, ACCEPT, START_PROCESSING, REQUEST_USER_FEEDBACK, RESOLVE, CLOSE, REOPEN, CANCEL, HOLD, RESUME, ESCALATE, CLAIM, TRANSFER, ADD_COHANDLER, HANDOVER, INTERNAL_COMMENT, CONTROLLED_JUMP_REQUEST]
+        targetIamUserId:
+          type: string
+          pattern: '^[A-Za-z0-9._:-]{1,128}$'
+          description: 仅作为转办、协办、交接或分派候选人；服务端重新校验 IAM 有效性、角色、班次与数据范围。
+        comment:
+          type: string
+          maxLength: 2000
+        reason:
+          type: string
+          maxLength: 1000
+        targetNode:
+          type: string
+          enum: [classify, assign, accept, processing, user_feedback, closure]
+          description: 仅受控跳转申请使用，表示目标节点意图，不会直接改变 BPMN 节点。
+    ApprovalDecisionRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 1000
+    ApprovalTaskInbox:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalTaskInboxItem'
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+          maximum: 50
+    ApprovalTaskInboxItem:
+      type: object
+      additionalProperties: false
+      required: [approvalRequestId, ticketId, ticketTitle, ticketType, ticketStatus, ticketPriority, serviceCatalogItem, requester, applicantIamUserId, sourceNode, targetNode, reason, requestedAt, engineTaskCreatedAt, decisionMode, candidateApprovalCount, requiredApprovalCount, canDecide]
+      properties:
+        approvalRequestId:
+          type: string
+          format: uuid
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        ticketTitle:
+          type: string
+          maxLength: 200
+        ticketType:
+          $ref: '#/components/schemas/TicketType'
+        ticketStatus:
+          $ref: '#/components/schemas/TicketStatus'
+        ticketPriority:
+          $ref: '#/components/schemas/TicketPriority'
+        serviceCatalogItem:
+          $ref: '#/components/schemas/ServiceCatalogSummary'
+        requester:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        applicantIamUserId:
+          type: string
+          maxLength: 128
+        sourceNode:
+          type: string
+          maxLength: 64
+        targetNode:
+          type: string
+          maxLength: 64
+        reason:
+          type: string
+          maxLength: 1000
+        requestedAt:
+          type: string
+          format: date-time
+        engineTaskCreatedAt:
+          type: string
+          format: date-time
+        decisionMode:
+          type: string
+          enum: [ANY_ONE, ALL_OF, UNRECORDED]
+          description: 发起时冻结的审批决策模式；UNRECORDED 历史记录禁止继续审批。
+        candidateApprovalCount:
+          type: integer
+          minimum: 0
+          description: 冻结候选审批人数；不返回具体 IAM 用户 ID。
+        requiredApprovalCount:
+          type: integer
+          minimum: 0
+          description: 当前模式下所需的同意人数；ANY_ONE 为 1，ALL_OF 等于冻结候选人数。
+        canDecide:
+          type: boolean
+          description: 展示提示；审批提交仍会重新校验 Flowable 状态、对象权限、角色与禁止自审规则。
+        disabledReason:
+          type: string
+          maxLength: 200
+    WorkflowProcessDefinition:
+      type: object
+      additionalProperties: false
+      required: [processKey, processDefinitionId, name, version, deploymentId, deployedAt]
+      properties:
+        processKey:
+          type: string
+          maxLength: 128
+        processDefinitionId:
+          type: string
+          maxLength: 256
+        name:
+          type: string
+          maxLength: 200
+        version:
+          type: integer
+          minimum: 1
+        deploymentId:
+          type: string
+          maxLength: 128
+        deployedAt:
+          type: string
+          format: date-time
+    WorkflowOverviewReadModel:
+      type: object
+      additionalProperties: false
+      required: [instance, tasks, comments, availableActions, events, participants, approvalRequests, approvalDecisions, controlledJumpActions]
+      properties:
+        instance:
+          $ref: '#/components/schemas/WorkflowInstanceProjection'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowTaskProjection'
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowCommentProjection'
+        availableActions:
+          type: array
+          description: 仅当前读取时的展示提示；写入时服务端仍重新鉴权。
+          items:
+            $ref: '#/components/schemas/WorkflowAvailableAction'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowEventProjection'
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkflowParticipantProjection'
+        approvalRequests:
+          type: array
+          items:
+            $ref: '#/components/schemas/ControlledJumpApprovalProjection'
+        approvalDecisions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalDecisionRecord'
+        controlledJumpActions:
+          type: array
+          description: 仅服务经理或平台管理员可见的服务端计算管理能力；不是授权凭据。
+          items:
+            $ref: '#/components/schemas/ControlledJumpManagementAction'
+    WorkflowInstanceProjection:
+      type: object
+      additionalProperties: false
+      required: [ticketId, engineInstanceId, currentNode, status, escalationLevel, version, createdAt, updatedAt]
+      properties:
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        engineInstanceId:
+          type: string
+          maxLength: 128
+        currentNode:
+          type: string
+          maxLength: 64
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        escalationLevel:
+          type: integer
+          minimum: 0
+        primaryAssigneeIamUserId:
+          type: string
+          maxLength: 128
+        version:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowTaskProjection:
+      type: object
+      additionalProperties: false
+      required: [id, ticketId, nodeKey, status, version, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        engineTaskId:
+          type: string
+          maxLength: 128
+        nodeKey:
+          type: string
+          maxLength: 64
+        status:
+          type: string
+          enum: [OPEN, CLAIMED, COMPLETED, CANCELLED]
+        candidateRole:
+          type: string
+          maxLength: 128
+        candidateIamUserId:
+          type: string
+          maxLength: 128
+        assigneeIamUserId:
+          type: string
+          maxLength: 128
+        collaborationRole:
+          type: string
+          enum: [PRIMARY, CO_HANDLER]
+        version:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowCommentProjection:
+      type: object
+      additionalProperties: false
+      required: [id, ticketId, authorIamUserId, body, createdAt]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        authorIamUserId:
+          type: string
+          maxLength: 128
+        body:
+          type: string
+          maxLength: 4000
+        createdAt:
+          type: string
+          format: date-time
+    WorkflowAvailableAction:
+      type: object
+      additionalProperties: false
+      required: [code, label, requiresTarget]
+      properties:
+        code:
+          type: string
+          maxLength: 64
+        label:
+          type: string
+          maxLength: 64
+        requiresTarget:
+          type: boolean
+    WorkflowEventProjection:
+      type: object
+      additionalProperties: false
+      required: [id, ticketId, action, actorIamUserId, requestId, attributes, occurredAt]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        action:
+          type: string
+          maxLength: 128
+        actorIamUserId:
+          type: string
+          maxLength: 128
+        requestId:
+          type: string
+          maxLength: 128
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+        occurredAt:
+          type: string
+          format: date-time
+    WorkflowParticipantProjection:
+      type: object
+      additionalProperties: false
+      required: [ticketId, role, identity, assignedAt]
+      properties:
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        role:
+          type: string
+          enum: [PRIMARY, CO_HANDLER]
+        identity:
+          $ref: '#/components/schemas/IdentitySnapshot'
+        assignedAt:
+          type: string
+          format: date-time
+    ControlledJumpApprovalProjection:
+      type: object
+      additionalProperties: false
+      required: [id, ticketId, applicantIamUserId, sourceNode, targetNode, reason, status, createdAt, approvalPolicy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ticketId:
+          $ref: '#/components/schemas/TicketIdValue'
+        applicantIamUserId:
+          type: string
+          maxLength: 128
+        sourceNode:
+          type: string
+          maxLength: 64
+        targetNode:
+          type: string
+          maxLength: 64
+        reason:
+          type: string
+          maxLength: 1000
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, EXECUTING, EXECUTED]
+        createdAt:
+          type: string
+          format: date-time
+        approverIamUserId:
+          type: string
+          maxLength: 128
+        decisionReason:
+          type: string
+          maxLength: 1000
+        decidedAt:
+          type: string
+          format: date-time
+        approvalEngineInstanceId:
+          type: string
+          maxLength: 128
+        sourceTicketVersion:
+          type: integer
+          minimum: 0
+        sourceWorkflowVersion:
+          type: integer
+          minimum: 0
+        executorIamUserId:
+          type: string
+          maxLength: 128
+        executionStartedAt:
+          type: string
+          format: date-time
+        executedAt:
+          type: string
+          format: date-time
+        executedFromNode:
+          type: string
+          maxLength: 64
+        executedToNode:
+          type: string
+          maxLength: 64
+        executionFailureReason:
+          type: string
+          maxLength: 160
+        approvalPolicy:
+          $ref: '#/components/schemas/ApprovalPolicySnapshot'
+    ApprovalPolicySnapshot:
+      type: object
+      additionalProperties: false
+      required: [processKey, processDefinitionId, processVersion, candidateRoles, decisionMode, timeoutPolicyVersion, escalationPolicyVersion, capturedAt]
+      description: 创建审批申请时冻结的流程定义、角色和审批策略证据；具体 IAM 审批人 ID 只保存在服务端审计快照，不通过工单详情接口返回。后续发布、角色映射或超时规则变更不改写它。历史空集合记录仅可审计展示，服务端禁止继续审批。
+      properties:
+        processKey:
+          type: string
+          maxLength: 128
+        processDefinitionId:
+          type: string
+          maxLength: 128
+        processVersion:
+          type: integer
+          minimum: 0
+          description: 0 仅表示历史记录未保存具体流程定义，系统禁止继续审批该记录。
+        candidateRoles:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            maxLength: 128
+        decisionMode:
+          type: string
+          enum: [ANY_ONE, ALL_OF]
+          description: 仅由服务端部署策略解析并在创建时冻结；ANY_ONE 为任一审批，ALL_OF 为全员会签。
+        timeoutPolicyVersion:
+          type: string
+          maxLength: 128
+        escalationPolicyVersion:
+          type: string
+          maxLength: 128
+        capturedAt:
+          type: string
+          format: date-time
+    ApprovalDecisionRecord:
+      type: object
+      additionalProperties: false
+      required: [id, approvalRequestId, approverIamUserId, decision, reason, decidedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        approvalRequestId:
+          type: string
+          format: uuid
+        engineTaskId:
+          type: string
+          maxLength: 128
+        approverIamUserId:
+          type: string
+          maxLength: 128
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED]
+        reason:
+          type: string
+          maxLength: 1000
+        decidedAt:
+          type: string
+          format: date-time
+    ControlledJumpPreflight:
+      type: object
+      additionalProperties: false
+      required: [executable, blockingReasons, currentTaskDisposition, targetCandidateRole, candidateResolution, candidateRecalculationRequired, slaImpact, notificationImpact]
+      properties:
+        executable:
+          type: boolean
+        blockingReasons:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+        currentTaskDisposition:
+          type: string
+          maxLength: 128
+        targetCandidateRole:
+          type: string
+          maxLength: 128
+        candidateResolution:
+          type: string
+          maxLength: 128
+        candidateRecalculationRequired:
+          type: boolean
+        slaImpact:
+          type: string
+          maxLength: 128
+        notificationImpact:
+          type: string
+          maxLength: 128
+    ControlledJumpManagementAction:
+      type: object
+      additionalProperties: false
+      required: [requestId, canPreflight, canExecute]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        canPreflight:
+          type: boolean
+          description: 当前管理身份可发起只读预演；调用时仍会重新鉴权。
+        canExecute:
+          type: boolean
+          description: 服务端按当前快照计算的展示结论，不能替代执行时校验。
+        disabledReason:
+          type: string
+          maxLength: 1000
+    TicketIdValue:
+      type: string
+      pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
     ControlledJumpRequest:
       type: object
       additionalProperties: false
@@ -4885,6 +6538,14 @@ components:
         description:
           type: string
           maxLength: 4000
+          description: 服务端从原始输入或已清洗富文本派生的纯文本摘要；用于检索和非富文本兼容展示。
+        descriptionFormat:
+          type: string
+          enum: [PLAIN_TEXT, RICH_TEXT]
+        descriptionHtml:
+          type: string
+          maxLength: 12000
+          description: 仅当 descriptionFormat=RICH_TEXT 时出现，且已由服务端白名单清洗。客户端不得将任意其他字段以 HTML 渲染。
         requester:
           $ref: '#/components/schemas/IdentitySnapshot'
         assignee:
@@ -4905,6 +6566,55 @@ components:
           type: integer
           minimum: 0
           description: 乐观锁版本；写操作须在后续动作契约中携带并校验。
+    TicketRelationType:
+      type: string
+      enum: [RELATED, DUPLICATE_OF, PARENT_OF, PROBLEM_REFERENCE, CHANGE_REFERENCE]
+    TicketRelationRequest:
+      type: object
+      additionalProperties: false
+      required: [targetTicketId, relationType]
+      properties:
+        targetTicketId:
+          type: string
+          pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+        relationType:
+          $ref: '#/components/schemas/TicketRelationType'
+    TicketRelation:
+      type: object
+      additionalProperties: false
+      required: [relationType, direction, relatedTicket, createdByIamUserId, createdAt]
+      properties:
+        relationType:
+          $ref: '#/components/schemas/TicketRelationType'
+        direction:
+          type: string
+          enum: [OUTBOUND, INBOUND]
+          description: 相对于当前查询工单的关系方向；RELATED 的方向仅用于审计展示。
+        relatedTicket:
+          $ref: '#/components/schemas/TicketRelationSummary'
+        createdByIamUserId:
+          type: string
+          maxLength: 128
+        createdAt:
+          type: string
+          format: date-time
+    TicketRelationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, type, status, priority, title]
+      properties:
+        id:
+          type: string
+          pattern: '^TKT-[0-9]{8}-[0-9]{6}$'
+        type:
+          $ref: '#/components/schemas/TicketType'
+        status:
+          $ref: '#/components/schemas/TicketStatus'
+        priority:
+          $ref: '#/components/schemas/TicketPriority'
+        title:
+          type: string
+          maxLength: 200
     IdentitySnapshot:
       type: object
       additionalProperties: false
@@ -5641,6 +7351,88 @@ components:
         auditEventId:
           type: string
           maxLength: 128
+    BackofficeAccessUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled, roleCodes, dataScopes, expectedVersion]
+      properties:
+        enabled:
+          type: boolean
+          description: 关闭后仅撤销后台能力，不影响普通用户通过 IAM 使用前台建单。
+        roleCodes:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            enum: [ROLE_FIRST_LINE_SUPPORT, ROLE_SECOND_LINE_SUPPORT, ROLE_APPROVER, ROLE_SERVICE_MANAGER, ROLE_SLA_MANAGER, ROLE_AUDITOR, ROLE_PLATFORM_ADMIN]
+        dataScopes:
+          type: array
+          maxItems: 200
+          uniqueItems: true
+          items:
+            type: object
+            additionalProperties: false
+            required: [scopeType, scopeId]
+            properties:
+              scopeType:
+                type: string
+                enum: [ORGANIZATION, SERVICE, QUEUE, CONFIGURATION_ITEM]
+              scopeId:
+                type: string
+                maxLength: 128
+                pattern: '^[A-Za-z0-9._:-]{1,128}$'
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: 后台授权记录乐观锁版本；首次配置为 0。
+    BackofficeAccessResponse:
+      type: object
+      additionalProperties: false
+      required: [user, access]
+      properties:
+        user:
+          type: object
+          additionalProperties: false
+          required: [iamUserId, loginName, displayName, organizationIamId, organizationName]
+          properties:
+            iamUserId:
+              type: string
+            loginName:
+              type: string
+            displayName:
+              type: string
+            organizationIamId:
+              type: string
+            organizationName:
+              type: string
+        access:
+          type: object
+          additionalProperties: false
+          required: [enabled, roleCodes, dataScopes, version]
+          properties:
+            enabled:
+              type: boolean
+            roleCodes:
+              type: array
+              items:
+                type: string
+            dataScopes:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [scopeType, scopeId]
+                properties:
+                  scopeType:
+                    type: string
+                  scopeId:
+                    type: string
+            version:
+              type: integer
+            updatedAt:
+              type: [string, 'null']
+              format: date-time
     ApiError:
       type: object
       additionalProperties: false
@@ -5659,7 +7451,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, ATTACHMENT_REJECTED, ATTACHMENT_NOT_AVAILABLE, ATTACHMENT_SCAN_UNAVAILABLE, KNOWLEDGE_IMPORT_REJECTED, KNOWLEDGE_DOCUMENT_NOT_AVAILABLE, KNOWLEDGE_PUBLICATION_NOT_ALLOWED, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, ATTACHMENT_REJECTED, ATTACHMENT_NOT_AVAILABLE, ATTACHMENT_SCAN_UNAVAILABLE, KNOWLEDGE_IMPORT_REJECTED, KNOWLEDGE_DOCUMENT_NOT_AVAILABLE, KNOWLEDGE_PUBLICATION_NOT_ALLOWED, INTEGRATION_CONFIGURATION_NOT_ALLOWED, INTEGRATION_CALLBACK_REJECTED, INTEGRATION_REPLAY_REJECTED, CONFIGURATION_ITEM_NOT_AVAILABLE, ALERT_NOT_AVAILABLE, OBSERVABILITY_LINK_NOT_AVAILABLE, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500

@@ -39,4 +39,23 @@ public class WorkflowController {
         return TicketResponse.from(workflowService.act(ticketId, new WorkflowActionCommand(request.action(), expectedVersion,
             request.targetIamUserId(), request.comment(), request.reason(), request.targetNode())));
     }
+
+    @PostMapping("/approval-requests/{requestId}/decisions")
+    cn.servicehub.workflow.domain.ControlledJumpRequest decide(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId, @Valid @RequestBody ApprovalDecisionRequest request) {
+        return workflowService.decideJumpRequest(ticketId, requestId, request.decision(), request.reason());
+    }
+
+    @GetMapping("/approval-requests/{requestId}/preflight")
+    cn.servicehub.workflow.application.ControlledJumpPreflight preflight(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId) {
+        ticketService.get(ticketId);
+        return workflowService.preflight(ticketId, requestId);
+    }
+
+    @PostMapping("/approval-requests/{requestId}/execute")
+    TicketResponse execute(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId, @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId,
+        @RequestHeader(HttpHeaders.IF_MATCH) @Pattern(regexp = "^\"?[0-9]+\"?$") String ifMatch) {
+        return TicketResponse.from(workflowService.executeApprovedJump(ticketId, requestId, Long.parseLong(ifMatch.replace("\"", ""))));
+    }
 }

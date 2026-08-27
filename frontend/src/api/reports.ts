@@ -59,6 +59,8 @@ export interface SlaRuleSummary {
   id: string
   name: string
   enabled: boolean
+  serviceCatalogItemId?: string
+  organizationScopeId?: string
   serviceCatalogItemName: string
   /** Server-side policy matching precedence, not a client-controlled ticket priority. */
   priorityLabel: string
@@ -90,9 +92,13 @@ interface SlaPolicyWire {
 }
 
 interface SlaPolicyPageWire { items: SlaPolicyWire[]; page: number; pageSize: number; total: number }
-interface LegacySlaPolicyWire {
+export interface LegacySlaPolicyWire {
   id: string; name: string; serviceCatalogItemId: string; priority: string; responseTargetMinutes: number; resolutionTargetMinutes: number
-  calendarKey: string; pauseStatuses: string[]; active: boolean; version: number; createdAt: string
+  organizationScopeId?: string; calendarKey: string; pauseStatuses: string[]; active: boolean; version: number; createdAt: string
+}
+export interface SlaPolicyWriteRequest {
+  name: string; serviceCatalogItemId?: string; priority?: 'P1' | 'P2' | 'P3' | 'P4'; organizationScopeId?: string
+  responseTargetMinutes: number; resolutionTargetMinutes: number; calendarKey: string; pauseStatuses: string[]; active: boolean; expectedVersion?: number
 }
 
 type ReportMetricCode =
@@ -227,6 +233,7 @@ export const reportsApi = {
       if (Array.isArray(response)) {
         return { data: { total: response.length, items: response.map((policy) => ({
           id: policy.id, name: policy.name, enabled: policy.active, serviceCatalogItemName: policy.serviceCatalogItemId,
+          serviceCatalogItemId: policy.serviceCatalogItemId, organizationScopeId: policy.organizationScopeId,
           priorityLabel: policy.priority, responseTargetMinutes: policy.responseTargetMinutes, resolutionTargetMinutes: policy.resolutionTargetMinutes,
           riskThresholdMinutes: 0, calendarName: policy.calendarKey, pauseStatusLabels: policy.pauseStatuses, version: policy.version, publishedAt: policy.createdAt,
         })) }, source: 'api' }
@@ -254,5 +261,10 @@ export const reportsApi = {
       if (!canUseDemoFallback || !isConnectionFailure(error)) throw error
       return { data: demoRules, source: 'demo' }
     }
+  },
+  async saveSlaPolicy(policyId: string | undefined, request: SlaPolicyWriteRequest): Promise<LegacySlaPolicyWire> {
+    return apiRequest<LegacySlaPolicyWire>(policyId ? `/admin/sla/policies/${encodeURIComponent(policyId)}` : '/admin/sla/policies', {
+      method: policyId ? 'PUT' : 'POST', body: request,
+    })
   },
 }

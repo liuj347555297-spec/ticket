@@ -10,6 +10,7 @@ public interface NotificationRepository {
     boolean save(Notification notification);
     List<Notification> findByRecipient(String iamUserId, String readState, String category, int offset, int limit);
     long countByRecipient(String iamUserId, String readState, String category);
+    List<String> findUnreadTicketIds(String iamUserId);
     Optional<Notification> markRead(String notificationId, String recipientIamUserId, long expectedVersion, Instant readAt);
     Optional<List<NotificationDelivery>> findDeliveries(String notificationId, String recipientIamUserId, int offset, int limit);
     long countDeliveries(String notificationId, String recipientIamUserId);

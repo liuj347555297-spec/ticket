@@ -18,6 +18,7 @@ public class InMemoryNotificationRepository implements NotificationRepository {
     @Override public boolean save(Notification notification) { return deduplication.putIfAbsent(notification.deduplicationKey(), notification.id()) == null && notifications.putIfAbsent(notification.id(), notification) == null; }
     @Override public List<Notification> findByRecipient(String user, String state, String category, int offset, int limit) { return notifications.values().stream().filter(n -> n.recipientIamUserId().equals(user)).filter(n -> state == null || ("READ".equals(state) == n.read())).filter(n -> category == null || n.category().equals(category)).sorted(Comparator.comparing(Notification::createdAt).reversed()).skip(offset).limit(limit).toList(); }
     @Override public long countByRecipient(String user, String state, String category) { return findByRecipient(user, state, category, 0, Integer.MAX_VALUE).size(); }
+    @Override public List<String> findUnreadTicketIds(String user) { return notifications.values().stream().filter(n -> n.recipientIamUserId().equals(user) && !n.read() && n.ticketId() != null).map(Notification::ticketId).distinct().toList(); }
     @Override public java.util.Optional<Notification> markRead(String id, String recipient, long expected, Instant at) {
         Notification current = notifications.get(id);
         if (current == null || !current.recipientIamUserId().equals(recipient)) return java.util.Optional.empty();

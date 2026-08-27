@@ -35,6 +35,15 @@ server:
     include-stacktrace: never
     include-binding-errors: never
 servicehub:
+  iam-sso:
+    # Enable only after the internal IAM OIDC client registration, issuer, redirect URI and immutable subject field have been approved.
+    enabled: ${SERVICEHUB_IAM_SSO_ENABLED:false}
+    iam-user-id-attribute: ${SERVICEHUB_IAM_SSO_SUBJECT_ATTRIBUTE:sub}
+  workflow:
+    controlled-jump:
+      # A deployment-controlled list of target lifecycle nodes that require all frozen approvers.
+      # Empty means ANY_ONE; this is never selected by the browser or an API request.
+      all-of-target-nodes: ${SERVICEHUB_CONTROLLED_JUMP_ALL_OF_TARGET_NODES:}
   attachment:
     # Development-only location. Production supplies a mounted, non-web-accessible volume or an object-storage adapter.
     storage-root: ${SERVICEHUB_ATTACHMENT_STORAGE_ROOT:${java.io.tmpdir}/servicehub-attachments}
@@ -43,7 +52,7 @@ servicehub:
   security:
     # Must be replaced by the internal portal origin for each deployment environment.
     allowed-origins:
-      - http://localhost:5173
+      - http://localhost:1525
 management:
   endpoints:
     web:

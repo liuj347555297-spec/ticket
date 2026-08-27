@@ -46,6 +46,6 @@ class NotificationControllerTest {
             .andExpect(status().isForbidden());
     }
     private static String request() { return """
-        {"serviceCatalogItemId":"SC-browser-performance","type":"INCIDENT","title":"核协 E+ 页面卡顿","description":"打开工作台后响应缓慢","structuredFields":{"browser":"Chrome"},"tags":[{"name":"#核协E+","kind":"FREE"}]}
+        {"serviceCatalogItemId":"SC-browser-performance","serviceCatalogFormVersion":1,"type":"INCIDENT","title":"核协 E+ 页面卡顿","description":"打开工作台后响应缓慢","structuredFields":{"browser":"Chrome"},"tags":[{"name":"#核协E+","kind":"FREE"}]}
         """; }
 }

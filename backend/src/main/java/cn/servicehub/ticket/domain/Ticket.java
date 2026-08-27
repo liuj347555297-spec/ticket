@@ -9,7 +9,7 @@ import java.util.Map;
  * workflow actions will create new state transitions instead of trusting browser supplied values.
  */
 public record Ticket(String id, TicketType type, TicketStatus status, TicketPriority priority,
-                     String title, String description, Map<String, Object> structuredFields,
+                     String title, String description, TicketDescriptionFormat descriptionFormat, String descriptionHtml, Map<String, Object> structuredFields,
                      List<TicketTag> tags, List<String> relatedConfigurationItemIds,
                      IdentitySnapshot requester, ServiceCatalogSummary serviceCatalogItem,
                      Instant createdAt, Instant updatedAt, long version) {

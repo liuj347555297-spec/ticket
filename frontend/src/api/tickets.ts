@@ -1,4 +1,4 @@
-import { ApiError, apiRequest } from '@/api/client'
+import { ApiError, apiRequest, apiUpload } from '@/api/client'
 import { demoTicketRepository } from '@/api/demo-tickets'
 
 export type TicketType = 'INCIDENT' | 'SERVICE_REQUEST' | 'ACCESS_REQUEST' | 'PROBLEM' | 'CHANGE'
@@ -15,10 +15,14 @@ export type TicketStatus =
   | 'CANCELLED'
   | 'ON_HOLD'
 export type TicketPriority = 'P1' | 'P2' | 'P3' | 'P4'
+export type TicketDescriptionFormat = 'PLAIN_TEXT' | 'RICH_TEXT'
+export type TicketQueue = 'ALL' | 'MY_TODO' | 'OVERDUE' | 'TODAY_COMPLETED' | 'MY_DONE' | 'MY_REQUESTED' | 'DRAFTS' | 'TO_READ'
 export type TagKind = 'STANDARD' | 'FREE'
-export type TicketLifecycleAction = 'SUBMIT' | 'CLASSIFY' | 'ASSIGN' | 'ACCEPT' | 'START_PROCESSING' | 'REQUEST_USER_FEEDBACK' | 'RESOLVE' | 'CLOSE' | 'REOPEN' | 'CANCEL' | 'HOLD' | 'RESUME' | 'ESCALATE'
-export type TicketWorkAction = 'TRANSFER' | 'ADD_COLLABORATOR' | 'REMOVE_COLLABORATOR' | 'CLAIM' | 'APPOINT_PRIMARY' | 'HANDOVER_SHIFT'
-export type TicketActionCode = TicketLifecycleAction | TicketWorkAction | 'INTERNAL_COMMENT'
+export type TicketRelationType = 'RELATED' | 'DUPLICATE_OF' | 'PARENT_OF' | 'PROBLEM_REFERENCE' | 'CHANGE_REFERENCE'
+/** Values are the server's WorkflowAction enum, not client-defined state transitions. */
+export type TicketLifecycleAction = 'CLASSIFY' | 'ASSIGN' | 'ACCEPT' | 'REQUEST_USER_FEEDBACK' | 'RESOLVE' | 'CLOSE' | 'REOPEN' | 'CANCEL' | 'HOLD' | 'RESUME' | 'ESCALATE'
+export type TicketWorkAction = 'TRANSFER' | 'ADD_COHANDLER' | 'CLAIM' | 'HANDOVER'
+export type TicketActionCode = TicketLifecycleAction | TicketWorkAction | 'INTERNAL_COMMENT' | 'CONTROLLED_JUMP_REQUEST'
 
 /** Returned by the server's workflow read model. The UI must never infer this from a status. */
 export interface TicketAvailableAction {
@@ -69,6 +73,140 @@ export interface TicketAttachment {
   retentionState?: 'ACTIVE' | 'DELETE_REQUESTED' | 'RETAINED'
 }
 export interface TicketAttachmentPage { items: TicketAttachment[]; total: number }
+
+interface TicketAttachmentWire {
+  id: string
+  filename: string
+  detectedMediaType: string
+  sizeBytes: number
+  scanStatus: 'QUARANTINED' | 'CLEAN' | 'REJECTED' | 'SCAN_FAILED'
+}
+
+interface TicketAttachmentUploadWire extends TicketAttachmentWire { createdAt: string }
+
+interface WorkflowCommentWire {
+  id: string
+  authorIamUserId: string
+  body: string
+  createdAt: string
+}
+
+interface WorkflowOverviewWire {
+  comments: WorkflowCommentWire[]
+  availableActions: TicketAvailableAction[]
+  instance: {
+    currentNode: string
+    primaryAssigneeIamUserId?: string
+    escalationLevel: number
+  }
+  tasks: Array<{
+    id: string
+    nodeKey: string
+    status: 'OPEN' | 'CLAIMED' | 'COMPLETED' | 'CANCELLED'
+    candidateRole?: string
+    candidateIamUserId?: string
+    assigneeIamUserId?: string
+    createdAt: string
+    updatedAt: string
+  }>
+  events: Array<{
+    id: number
+    action: string
+    actorIamUserId: string
+    requestId: string
+    occurredAt: string
+  }>
+  participants: Array<{
+    role: 'PRIMARY' | 'CO_HANDLER'
+    identity: IdentitySnapshot
+    assignedAt: string
+  }>
+  approvalRequests: Array<{
+    id: string
+    applicantIamUserId: string
+    sourceNode: string
+    targetNode: string
+    reason: string
+    status: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'EXECUTING' | 'EXECUTED' | 'CANCELLED'
+    createdAt: string
+    approverIamUserId?: string
+    decidedAt?: string
+    executorIamUserId?: string
+    executionStartedAt?: string
+    executedAt?: string
+    executedFromNode?: string
+    executedToNode?: string
+    executionFailureReason?: string
+    approvalPolicy: {
+      processKey: string
+      processDefinitionId: string
+      processVersion: number
+      candidateRoles: string[]
+      /** Frozen IAM candidate IDs are retained only in the server-side audit snapshot. */
+      decisionMode: string
+      timeoutPolicyVersion: string
+      escalationPolicyVersion: string
+      capturedAt: string
+    }
+  }>
+  approvalDecisions: Array<{
+    id: string
+    approvalRequestId: string
+    engineTaskId?: string
+    approverIamUserId: string
+    decision: 'APPROVED' | 'REJECTED'
+    reason: string
+    decidedAt: string
+  }>
+  /** Returned only to service managers/platform administrators. Never inferred by the browser. */
+  controlledJumpActions: Array<{
+    requestId: string
+    canPreflight: boolean
+    canExecute: boolean
+    disabledReason?: string
+  }>
+}
+
+export interface ControlledJumpPreflight {
+  executable: boolean
+  blockingReasons: string[]
+  currentTaskDisposition: string
+  targetCandidateRole: string
+  candidateResolution: string
+  candidateRecalculationRequired: boolean
+  slaImpact: string
+  notificationImpact: string
+}
+
+/** A manager's worklist row is sourced from a live Flowable candidate task and an authorized ticket projection. */
+export interface ApprovalTaskInboxItem {
+  approvalRequestId: string
+  ticketId: string
+  ticketTitle: string
+  ticketType: TicketType
+  ticketStatus: TicketStatus
+  ticketPriority: TicketPriority
+  serviceCatalogItem: ServiceCatalogSummary
+  requester: IdentitySnapshot
+  applicantIamUserId: string
+  sourceNode: string
+  targetNode: string
+  reason: string
+  requestedAt: string
+  engineTaskCreatedAt: string
+  /** Approval policy snapshot summary. Candidate identities remain server-side evidence and are not returned here. */
+  decisionMode: 'ANY_ONE' | 'ALL_OF' | 'UNRECORDED'
+  candidateApprovalCount: number
+  requiredApprovalCount: number
+  canDecide: boolean
+  disabledReason?: string
+}
+
+export interface ApprovalTaskInbox {
+  items: ApprovalTaskInboxItem[]
+  page: number
+  pageSize: number
+}
 
 export type SlaRiskLevel = 'NORMAL' | 'AT_RISK' | 'BREACHED'
 
@@ -134,6 +272,15 @@ export interface ServiceCatalogSummary {
   name: string
 }
 
+/** Related-ticket summaries are returned only after both endpoints pass object authorization. */
+export interface TicketRelation {
+  relationType: TicketRelationType
+  direction: 'OUTBOUND' | 'INBOUND'
+  relatedTicket: Pick<Ticket, 'id' | 'type' | 'status' | 'priority' | 'title'>
+  createdByIamUserId: string
+  createdAt: string
+}
+
 export interface Ticket {
   id: string
   type: TicketType
@@ -141,6 +288,9 @@ export interface Ticket {
   priority: TicketPriority
   title: string
   description?: string
+  /** Only present when the server stored a rich-text body after allow-list sanitization. */
+  descriptionFormat?: TicketDescriptionFormat
+  descriptionHtml?: string
   requester: IdentitySnapshot
   assignee?: IdentitySnapshot
   serviceCatalogItem: ServiceCatalogSummary
@@ -169,6 +319,7 @@ export interface TicketCreateRequest {
   type: TicketType
   title: string
   description: string
+  descriptionFormat?: TicketDescriptionFormat
   structuredFields: Record<string, string | boolean | string[]>
   tags?: TicketTag[]
   relatedConfigurationItemIds?: string[]
@@ -180,6 +331,7 @@ export interface TicketQuery {
   status?: TicketStatus
   type?: TicketType
   q?: string
+  queue?: TicketQueue
 }
 
 export interface TicketResult<T> {
@@ -188,18 +340,12 @@ export interface TicketResult<T> {
 }
 
 export interface TicketActionRequest {
-  action: TicketLifecycleAction
+  action: TicketActionCode
   version: number
-  reason: string
-  structuredFields: Record<string, string | boolean | string[]>
-}
-
-export interface TicketWorkActionRequest {
-  action: TicketWorkAction
-  version: number
-  reason: string
   targetIamUserId?: string
-  structuredFields: Record<string, string | boolean | string[]>
+  comment?: string
+  reason?: string
+  targetNode?: 'classify' | 'assign' | 'accept' | 'processing' | 'user_feedback' | 'closure'
 }
 
 export interface TicketActionResult {
@@ -270,34 +416,115 @@ export const ticketApi = {
     }
   },
 
-  async executeAction(ticketId: string, request: TicketActionRequest): Promise<TicketActionResult> {
-    return apiRequest<TicketActionResult>(`/tickets/${encodeURIComponent(ticketId)}/actions`, {
-      method: 'POST', headers: { 'Idempotency-Key': newIdempotencyKey() }, body: request,
+  async uploadAttachment(ticketId: string, file: File): Promise<TicketAttachmentUploadWire> {
+    const body = new FormData()
+    body.set('file', file, file.name)
+    return apiUpload<TicketAttachmentUploadWire>(`/tickets/${encodeURIComponent(ticketId)}/attachments`, body)
+  },
+
+  async updateDescription(ticketId: string, version: number, description: string): Promise<Ticket> {
+    return apiRequest<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/description`, {
+      method: 'PATCH', headers: { 'If-Match': `"${version}"` }, body: { description, descriptionFormat: 'RICH_TEXT' },
     })
   },
 
-  async executeWorkAction(ticketId: string, request: TicketWorkActionRequest): Promise<TicketWorkActionResult> {
-    return apiRequest<TicketWorkActionResult>(`/tickets/${encodeURIComponent(ticketId)}/work-actions`, {
-      method: 'POST', headers: { 'Idempotency-Key': newIdempotencyKey() }, body: request,
+  async executeAction(ticketId: string, request: TicketActionRequest): Promise<TicketActionResult> {
+    const ticket = await apiRequest<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/workflow/actions`, {
+      method: 'POST',
+      // If-Match is an HTTP entity-tag. Real servlet containers reject an unquoted number.
+      headers: { 'If-Match': `"${request.version}"`, 'Idempotency-Key': newIdempotencyKey() },
+      body: request,
+    })
+    return {
+      ticket,
+      decision: { outcome: request.action === 'CONTROLLED_JUMP_REQUEST' ? 'PENDING_APPROVAL' : 'COMPLETED', workflowInstanceId: 'server-managed', currentNodeCode: ticket.status, auditEventId: 'server-managed' },
+      slaImpact: { calculatedByServer: true, impact: 'RECALCULATED' },
+    }
+  },
+
+  async getWorkflowOverview(ticketId: string): Promise<WorkflowOverviewWire> {
+    return apiRequest<WorkflowOverviewWire>(`/tickets/${encodeURIComponent(ticketId)}/workflow`)
+  },
+
+  async preflightControlledJump(ticketId: string, requestId: string): Promise<ControlledJumpPreflight> {
+    return apiRequest<ControlledJumpPreflight>(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/preflight`)
+  },
+
+  async executeControlledJump(ticketId: string, requestId: string, version: number): Promise<Ticket> {
+    return apiRequest<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/execute`, {
+      method: 'POST',
+      headers: { 'If-Match': `"${version}"`, 'Idempotency-Key': newIdempotencyKey() },
+    })
+  },
+
+  async listApprovalTasks(page = 1, pageSize = 20): Promise<ApprovalTaskInbox> {
+    return apiRequest<ApprovalTaskInbox>(`/workflow/approval-tasks?page=${page}&pageSize=${pageSize}`)
+  },
+
+  async decideControlledJump(ticketId: string, requestId: string, decision: 'APPROVED' | 'REJECTED', reason: string): Promise<void> {
+    await apiRequest(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/decisions`, {
+      method: 'POST', body: { decision, reason },
     })
   },
 
   async listInternalComments(ticketId: string): Promise<TicketPageResult<TicketComment>> {
-    return apiRequest<TicketPageResult<TicketComment>>(`/tickets/${encodeURIComponent(ticketId)}/internal-comments?page=1&pageSize=50`)
+    // Internal comments belong to the workflow aggregate.  The list is deliberately read
+    // through its authorized overview endpoint instead of exposing a second, unaudited
+    // comments route.
+    const overview = await ticketApi.getWorkflowOverview(ticketId)
+    return {
+      items: overview.comments.map((comment) => ({
+        id: comment.id,
+        visibility: 'INTERNAL' as const,
+        author: {
+          iamUserId: comment.authorIamUserId,
+          // The backend intentionally does not disclose other users' profile details in this
+          // workflow view. The IAM ID remains the auditable actor reference.
+          displayName: comment.authorIamUserId,
+          organizationName: '受控 IAM 投影',
+          capturedAt: comment.createdAt,
+        },
+        content: comment.body,
+        createdAt: comment.createdAt,
+      })),
+      page: 1,
+      pageSize: 50,
+      total: overview.comments.length,
+    }
   },
 
   async listAttachments(ticketId: string): Promise<TicketAttachmentPage> {
-    return apiRequest<TicketAttachmentPage>(`/tickets/${encodeURIComponent(ticketId)}/attachments`)
+    const attachments = await apiRequest<TicketAttachmentWire[]>(`/tickets/${encodeURIComponent(ticketId)}/attachments`)
+    const scanState: Record<TicketAttachmentWire['scanStatus'], AttachmentScanState> = {
+      QUARANTINED: 'QUARANTINED', CLEAN: 'SCAN_PASSED', REJECTED: 'REJECTED', SCAN_FAILED: 'SCAN_UNAVAILABLE',
+    }
+    return {
+      items: attachments.map((attachment) => ({
+        id: attachment.id,
+        displayFileName: attachment.filename,
+        detectedMediaType: attachment.detectedMediaType,
+        sizeBytes: attachment.sizeBytes,
+        scanState: scanState[attachment.scanStatus],
+        downloadable: attachment.scanStatus === 'CLEAN',
+      })),
+      total: attachments.length,
+    }
   },
 
   async getSla(ticketId: string): Promise<TicketSlaResponse> {
     return apiRequest<TicketSlaResponse>(`/tickets/${encodeURIComponent(ticketId)}/sla`)
   },
 
-  async createInternalComment(ticketId: string, request: { version: number; reason: string; content: string; structuredFields?: Record<string, string> }): Promise<TicketComment> {
-    return apiRequest<TicketComment>(`/tickets/${encodeURIComponent(ticketId)}/internal-comments`, {
-      method: 'POST', headers: { 'Idempotency-Key': newIdempotencyKey() }, body: request,
-    })
+  async listRelations(ticketId: string): Promise<TicketRelation[]> {
+    return apiRequest<TicketRelation[]>(`/tickets/${encodeURIComponent(ticketId)}/relations`)
+  },
+
+  async createRelation(ticketId: string, request: { targetTicketId: string; relationType: TicketRelationType }): Promise<TicketRelation> {
+    return apiRequest<TicketRelation>(`/tickets/${encodeURIComponent(ticketId)}/relations`, { method: 'POST', body: request })
+  },
+
+  async createInternalComment(ticketId: string, request: { version: number; reason: string; content: string; structuredFields?: Record<string, string> }): Promise<void> {
+    await ticketApi.executeAction(ticketId, { action: 'INTERNAL_COMMENT', version: request.version, reason: request.reason, comment: request.content })
   },
 }
 

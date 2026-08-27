@@ -14,12 +14,15 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.authentication.AuthenticationProvider;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfFilter;
+import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration
-@EnableConfigurationProperties(SecurityProperties.class)
+@EnableConfigurationProperties({SecurityProperties.class, IamSsoProperties.class})
 public class SecurityConfiguration {
 
     /**
@@ -43,14 +46,24 @@ public class SecurityConfiguration {
     }
 
     /**
-     * Authentication is intentionally not implemented until the IAM OIDC contract is fixed.
-     * This chain is deny-by-default: no controller or actuator endpoint is anonymously exposed.
+     * IAM OIDC is opt-in and only enabled after its client registration is supplied by deployment.
+     * This chain remains deny-by-default: no controller or actuator endpoint is anonymously exposed.
      */
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http, ApiErrorWriter apiErrorWriter) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, ApiErrorWriter apiErrorWriter,
+                                            org.springframework.beans.factory.ObjectProvider<LocalDevelopmentAuthenticationFilter> localDevelopmentAuthenticationFilter,
+                                            org.springframework.beans.factory.ObjectProvider<cn.servicehub.security.OidcIamAuthenticationSuccessHandler> oidcSuccessHandler) throws Exception {
+        CookieCsrfTokenRepository csrfTokenRepository = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        csrfTokenRepository.setHeaderName("X-CSRF-TOKEN");
         http
             .cors(Customizer.withDefaults())
-            .csrf(csrf -> csrf.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))
+            // The callback endpoint has no browser session and validates a signed, short-lived
+            // HMAC envelope itself. Every browser mutation continues to require CSRF.
+            // SPA submits the raw token from the XSRF-TOKEN cookie in the X-CSRF-TOKEN header.
+            // The explicit handler keeps this double-submit contract compatible with a JSON SPA.
+            .csrf(csrf -> csrf.csrfTokenRepository(csrfTokenRepository)
+                .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
+                .ignoringRequestMatchers("/api/v1/integrations/alerts/**"))
             .sessionManagement(session -> session
                 .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
                 .sessionFixation().migrateSession())
@@ -59,6 +72,8 @@ public class SecurityConfiguration {
             .formLogin(AbstractHttpConfigurer::disable)
             .logout(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.POST, "/api/v1/integrations/alerts/**").permitAll()
+                .requestMatchers("/oauth2/**", "/login/**").permitAll()
                 .requestMatchers("/actuator/**").hasRole("ACTUATOR_VIEW")
                 .anyRequest().authenticated())
             .exceptionHandling(exceptions -> exceptions
@@ -68,6 +83,10 @@ public class SecurityConfiguration {
                 .contentSecurityPolicy(csp -> csp.policyDirectives("default-src 'none'; frame-ancestors 'none'; base-uri 'none'"))
                 .frameOptions(frame -> frame.deny())
                 .referrerPolicy(referrer -> referrer.policy(org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter.ReferrerPolicy.NO_REFERRER)));
+        var oidcHandler = oidcSuccessHandler.getIfAvailable();
+        if (oidcHandler != null) http.oauth2Login(login -> login.successHandler(oidcHandler));
+        localDevelopmentAuthenticationFilter.ifAvailable(filter -> http.addFilterBefore(filter, AnonymousAuthenticationFilter.class));
+        http.addFilterAfter(new CsrfCookieBootstrapFilter(), CsrfFilter.class);
         return http.build();
     }
 
@@ -77,7 +96,7 @@ public class SecurityConfiguration {
         configuration.setAllowedOrigins(properties.allowedOrigins());
         configuration.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name(), HttpMethod.PUT.name(),
             HttpMethod.PATCH.name(), HttpMethod.DELETE.name(), HttpMethod.OPTIONS.name()));
-        configuration.setAllowedHeaders(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id", "Idempotency-Key"));
+        configuration.setAllowedHeaders(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id", "Idempotency-Key", "If-Match", "X-ServiceHub-Dev-Identity"));
         configuration.setExposedHeaders(List.of("X-Request-Id"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);

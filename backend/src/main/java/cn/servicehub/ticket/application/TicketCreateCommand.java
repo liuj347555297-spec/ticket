@@ -1,6 +1,7 @@
 package cn.servicehub.ticket.application;
 
 import cn.servicehub.ticket.domain.TicketTag;
+import cn.servicehub.ticket.domain.TicketDescriptionFormat;
 import cn.servicehub.ticket.domain.TicketType;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -9,9 +10,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
-public record TicketCreateCommand(String serviceCatalogItemId, TicketType type, String title, String description,
+public record TicketCreateCommand(String serviceCatalogItemId, int serviceCatalogFormVersion, TicketType type, String title, String description,
+                                  TicketDescriptionFormat descriptionFormat, String descriptionHtml,
                                   Map<String, Object> structuredFields, List<TicketTag> tags,
                                   List<String> relatedConfigurationItemIds) {
+    public TicketCreateCommand(String serviceCatalogItemId, TicketType type, String title, String description,
+                               Map<String, Object> structuredFields, List<TicketTag> tags,
+                               List<String> relatedConfigurationItemIds) {
+        this(serviceCatalogItemId, 1, type, title, description, TicketDescriptionFormat.PLAIN_TEXT, null, structuredFields, tags, relatedConfigurationItemIds);
+    }
     public TicketCreateCommand {
         structuredFields = structuredFields == null ? Map.of() : Map.copyOf(structuredFields);
         tags = tags == null ? List.of() : List.copyOf(tags);
@@ -20,7 +27,7 @@ public record TicketCreateCommand(String serviceCatalogItemId, TicketType type, 
 
     /** Stable enough for the supported JSON primitives; persistence will retain this with the idempotency record. */
     public String fingerprint() {
-        String canonical = serviceCatalogItemId + '\u001f' + type + '\u001f' + title + '\u001f' + description + '\u001f'
+        String canonical = serviceCatalogItemId + '\u001f' + serviceCatalogFormVersion + '\u001f' + type + '\u001f' + title + '\u001f' + description + '\u001f' + descriptionFormat + '\u001f' + descriptionHtml + '\u001f'
             + canonicalValue(new TreeMap<>(structuredFields)) + '\u001f' + tags + '\u001f' + relatedConfigurationItemIds;
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")

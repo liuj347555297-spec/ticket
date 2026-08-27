@@ -67,9 +67,21 @@ public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
                 return current;
             }
             updated.set(true);
-            return new Ticket(current.id(), current.type(), status, current.priority(), current.title(), current.description(),
+            return new Ticket(current.id(), current.type(), status, current.priority(), current.title(), current.description(), current.descriptionFormat(), current.descriptionHtml(),
                 current.structuredFields(), current.tags(), current.relatedConfigurationItemIds(), current.requester(),
                 current.serviceCatalogItem(), current.createdAt(), updatedAt, current.version() + 1);
+        });
+        return updated.get();
+    }
+
+    @Override
+    public boolean updateDescription(String ticketId, long expectedVersion, String description, cn.servicehub.ticket.domain.TicketDescriptionFormat format, String descriptionHtml, java.time.Instant updatedAt) {
+        AtomicBoolean updated = new AtomicBoolean(false);
+        ticketsById.computeIfPresent(ticketId, (ignored, current) -> {
+            if (current.version() != expectedVersion) return current;
+            updated.set(true);
+            return new Ticket(current.id(), current.type(), current.status(), current.priority(), current.title(), description, format, descriptionHtml,
+                current.structuredFields(), current.tags(), current.relatedConfigurationItemIds(), current.requester(), current.serviceCatalogItem(), current.createdAt(), updatedAt, current.version() + 1);
         });
         return updated.get();
     }

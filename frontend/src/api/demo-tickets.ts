@@ -38,8 +38,8 @@ let tickets: Ticket[] = [
     availableActions: [
       { code: 'REQUEST_USER_FEEDBACK', label: '待用户反馈' }, { code: 'RESOLVE', label: '解决' },
       { code: 'HOLD', label: '挂起' }, { code: 'ESCALATE', label: '升级' }, { code: 'TRANSFER', label: '转办', requiresTarget: true },
-      { code: 'ADD_COLLABORATOR', label: '添加协办', requiresTarget: true }, { code: 'CLAIM', label: '抢单' },
-      { code: 'APPOINT_PRIMARY', label: '指定主办', requiresTarget: true }, { code: 'HANDOVER_SHIFT', label: '交接班', requiresTarget: true },
+      { code: 'ADD_COHANDLER', label: '添加协办', requiresTarget: true }, { code: 'CLAIM', label: '抢单' },
+      { code: 'HANDOVER', label: '交接班', requiresTarget: true },
       { code: 'INTERNAL_COMMENT', label: '内部评论' },
     ],
     participants: [
