@@ -3,7 +3,7 @@ name: production-readiness
 on:
   pull_request:
   push:
-    branches: [develop, main]
+    branches: [develop, master, main]
   workflow_dispatch:
 
 # The internal runner is pre-provisioned with Java 21, Node/npm, Maven, Syft, Trivy, Gitleaks,
