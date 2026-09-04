@@ -54,6 +54,15 @@ export interface OperationsReport {
   queueLoads: QueueLoad[]
   slaRisk: SlaRiskSummary
 }
+export interface OperationsExportTask {
+  id: string
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  fileName?: string
+  errorCode?: string
+  createdAt: string
+  completedAt?: string
+}
+export interface WorkCalendarSummary { key: string; version: number; name: string; timeZone: string; allDay: boolean; workingWeekdays: string[]; holidays: string[] }
 
 export interface SlaRuleSummary {
   id: string
@@ -224,6 +233,19 @@ export const reportsApi = {
       if (!canUseDemoFallback || !isConnectionFailure(error)) throw error
       return { data: demoReport, source: 'demo' }
     }
+  },
+
+  async requestOperationsExport(query: OperationsReportQuery): Promise<OperationsExportTask> {
+    const parameters = new URLSearchParams({ from: query.dateFrom, to: query.dateTo })
+    return apiRequest<OperationsExportTask>(`/reports/operations/exports?${parameters.toString()}`, { method: 'POST' })
+  },
+  async operationsExport(id: string): Promise<OperationsExportTask> {
+    return apiRequest<OperationsExportTask>(`/reports/operations/exports/${encodeURIComponent(id)}`)
+  },
+  async slaCalendars(): Promise<WorkCalendarSummary[]> { return apiRequest<WorkCalendarSummary[]>('/admin/sla/calendars') },
+  /** The server creates content asynchronously after freezing scope; this is never a direct report URL. */
+  operationsExportContentUrl(id: string): string {
+    return `/api/v1/reports/operations/exports/${encodeURIComponent(id)}/content`
   },
 
   async slaRules(): Promise<ReportResult<SlaRulePage>> {

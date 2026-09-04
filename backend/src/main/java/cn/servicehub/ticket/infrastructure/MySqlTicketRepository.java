@@ -6,6 +6,7 @@ import cn.servicehub.ticket.domain.IdentitySnapshot;
 import cn.servicehub.ticket.domain.ServiceCatalogSummary;
 import cn.servicehub.ticket.domain.Ticket;
 import cn.servicehub.ticket.domain.TicketQuery;
+import cn.servicehub.ticket.domain.TicketPageSlice;
 import cn.servicehub.ticket.domain.TicketRepository;
 import cn.servicehub.ticket.domain.TicketTag;
 import cn.servicehub.ticket.domain.TicketType;
@@ -89,27 +90,122 @@ public class MySqlTicketRepository implements TicketRepository {
     }
 
     @Override
+    @Deprecated(forRemoval = true)
     public List<Ticket> findAll(TicketQuery query) {
-        StringBuilder sql = new StringBuilder("SELECT * FROM ticket WHERE 1 = 1");
-        List<Object> parameters = new ArrayList<>();
-        if (query.status() != null) {
-            sql.append(" AND status = ?");
-            parameters.add(query.status().name());
-        }
-        if (query.type() != null) {
-            sql.append(" AND type = ?");
-            parameters.add(query.type().name());
-        }
-        if (query.keyword() != null && !query.keyword().isBlank()) {
-            sql.append(" AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(CAST(tags AS CHAR)) LIKE ?)");
-            String keyword = "%" + query.keyword().toLowerCase(java.util.Locale.ROOT) + "%";
-            parameters.add(keyword);
-            parameters.add(keyword);
-            parameters.add(keyword);
-        }
-        sql.append(" ORDER BY created_at DESC, id ASC");
-        return jdbcTemplate.query(sql.toString(), ticketRowMapper, parameters.toArray());
+        throw new UnsupportedOperationException("Unbounded MySQL ticket queries are forbidden; use findPage with an authorization scope");
     }
+
+    @Override
+    public TicketPageSlice findPage(TicketQuery query) {
+        if (query.accessScope() == null || query.snapshotAt() == null || query.pageSize() < 1 || query.pageSize() > 100) {
+            throw new IllegalArgumentException("Bounded ticket query is required");
+        }
+        SqlParts pageWhere = where(query, true);
+        List<Object> pageArguments = new ArrayList<>(pageWhere.arguments());
+        pageArguments.add(query.pageSize() + 1);
+        List<Ticket> rows = jdbcTemplate.query("SELECT t.* FROM ticket t" + pageWhere.sql()
+            + " ORDER BY t.created_at DESC, t.id DESC LIMIT ?", ticketRowMapper, pageArguments.toArray());
+        boolean hasMore = rows.size() > query.pageSize();
+        List<Ticket> items = hasMore ? List.copyOf(rows.subList(0, query.pageSize())) : List.copyOf(rows);
+        SqlParts countWhere = where(query, false);
+        Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM ticket t" + countWhere.sql(), Long.class,
+            countWhere.arguments().toArray());
+        return new TicketPageSlice(items, hasMore, count == null ? 0 : count);
+    }
+
+    private SqlParts where(TicketQuery query, boolean includeCursor) {
+        StringBuilder sql = new StringBuilder(" WHERE t.created_at <= ?");
+        List<Object> args = new ArrayList<>(); args.add(Timestamp.from(query.snapshotAt()));
+        if (query.status() != null) { sql.append(" AND t.status=?"); args.add(query.status().name()); }
+        if (query.type() != null) { sql.append(" AND t.type=?"); args.add(query.type().name()); }
+        if (query.priority() != null) { sql.append(" AND t.priority=?"); args.add(query.priority().name()); }
+        if (notBlank(query.serviceCatalogItemId())) {
+            sql.append(" AND (LOWER(t.service_catalog_item_id) LIKE ? ESCAPE '!' OR LOWER(t.service_catalog_item_name) LIKE ? ESCAPE '!')");
+            String value = "%" + escapeLikeLiteral(query.serviceCatalogItemId().trim().toLowerCase(java.util.Locale.ROOT)) + "%";
+            args.add(value); args.add(value);
+        }
+        if (notBlank(query.requesterOrganizationId())) {
+            sql.append(" AND (LOWER(t.requester_organization_id) LIKE ? ESCAPE '!' OR LOWER(t.requester_organization_name) LIKE ? ESCAPE '!')");
+            String value = "%" + escapeLikeLiteral(query.requesterOrganizationId().trim().toLowerCase(java.util.Locale.ROOT)) + "%";
+            args.add(value); args.add(value);
+        }
+        if (query.createdFrom() != null) { sql.append(" AND t.created_at>=?"); args.add(Timestamp.from(query.createdFrom())); }
+        if (query.createdTo() != null) { sql.append(" AND t.created_at<?"); args.add(Timestamp.from(query.createdTo())); }
+        if (notBlank(query.keyword())) {
+            sql.append(" AND (LOWER(t.id) LIKE ? ESCAPE '!' OR LOWER(t.title) LIKE ? ESCAPE '!' OR LOWER(t.description) LIKE ? ESCAPE '!' OR LOWER(t.service_catalog_item_name) LIKE ? ESCAPE '!' OR LOWER(CAST(t.tags AS CHAR)) LIKE ? ESCAPE '!')");
+            String value = "%" + escapeLikeLiteral(query.keyword().trim().toLowerCase(java.util.Locale.ROOT)) + "%";
+            args.add(value); args.add(value); args.add(value); args.add(value); args.add(value);
+        }
+        appendAuthorization(sql, args, query);
+        appendQueue(sql, args, query);
+        if (includeCursor && query.afterCreatedAt() != null) {
+            if (!notBlank(query.afterId())) throw new IllegalArgumentException("Ticket cursor key is incomplete");
+            sql.append(" AND (t.created_at<? OR (t.created_at=? AND t.id<?))");
+            Timestamp after = Timestamp.from(query.afterCreatedAt()); args.add(after); args.add(after); args.add(query.afterId());
+        }
+        return new SqlParts(sql.toString(), args);
+    }
+
+    private void appendAuthorization(StringBuilder sql, List<Object> args, TicketQuery query) {
+        var scope = query.accessScope();
+        sql.append(" AND (t.requester_iam_user_id=?"); args.add(scope.actorIamUserId());
+        if (scope.scopedTicketRole() && !scope.failClosed()) {
+            if (scope.legacyDirectBypass()) {
+                sql.append(" OR 1=1");
+            } else if (scope.hasAnyScope()) {
+                sql.append(" OR ("); boolean needsAnd = false;
+                needsAnd = appendIn(sql, args, "t.requester_organization_id", scope.organizationIds(), needsAnd);
+                needsAnd = appendIn(sql, args, "t.service_catalog_item_id", scope.serviceCatalogItemIds(), needsAnd);
+                if (!scope.serviceSystemCodes().isEmpty()) {
+                    if (needsAnd) sql.append(" AND ");
+                    sql.append("EXISTS (SELECT 1 FROM ticket_service_system_snapshot ss WHERE ss.ticket_id=t.id AND ss.system_code IN (");
+                    placeholders(sql, scope.serviceSystemCodes().size()); sql.append("))"); args.addAll(scope.serviceSystemCodes()); needsAnd = true;
+                }
+                if (!scope.configurationItemIds().isEmpty()) {
+                    if (needsAnd) sql.append(" AND ");
+                    sql.append("EXISTS (SELECT 1 FROM ticket_configuration_item tc WHERE tc.ticket_id=t.id AND tc.ci_id IN (");
+                    placeholders(sql, scope.configurationItemIds().size()); sql.append("))"); args.addAll(scope.configurationItemIds());
+                }
+                sql.append(")");
+            }
+        }
+        sql.append(")");
+    }
+
+    private void appendQueue(StringBuilder sql, List<Object> args, TicketQuery query) {
+        var scope = query.accessScope();
+        switch (query.queue()) {
+            case ALL -> { }
+            case MY_REQUESTED -> { sql.append(" AND t.requester_iam_user_id=?"); args.add(scope.actorIamUserId()); }
+            case DRAFTS -> { sql.append(" AND t.requester_iam_user_id=? AND t.status='DRAFT'"); args.add(scope.actorIamUserId()); }
+            case MY_TODO -> {
+                sql.append(" AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status IN ('OPEN','CLAIMED') AND (wt.assignee_iam_user_id=? OR (wt.assignee_iam_user_id IS NULL AND (wt.candidate_iam_user_id=?");
+                args.add(scope.actorIamUserId()); args.add(scope.actorIamUserId());
+                if (!scope.roleCodes().isEmpty()) { sql.append(" OR wt.candidate_role IN ("); placeholders(sql, scope.roleCodes().size()); sql.append(")"); args.addAll(scope.roleCodes()); }
+                sql.append("))))");
+            }
+            case MY_DONE -> { sql.append(" AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status='COMPLETED' AND wt.assignee_iam_user_id=?)"); args.add(scope.actorIamUserId()); }
+            case TODAY_COMPLETED -> { sql.append(" AND t.status IN ('RESOLVED','CLOSED') AND DATE(t.updated_at)=UTC_DATE() AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status='COMPLETED' AND wt.assignee_iam_user_id=?)"); args.add(scope.actorIamUserId()); }
+            case TO_READ -> { sql.append(" AND EXISTS (SELECT 1 FROM notification n WHERE n.ticket_id=t.id AND n.recipient_iam_user_id=? AND n.read_at IS NULL)"); args.add(scope.actorIamUserId()); }
+            case OVERDUE -> sql.append(" AND EXISTS (SELECT 1 FROM ticket_sla_target st WHERE st.ticket_id=t.id AND st.risk_level='BREACHED')");
+        }
+        if(notBlank(query.teamQueueCode())){
+            if(query.teamQueueScope()==null)throw new IllegalArgumentException("Authorized team queue scope is required");
+            sql.append(" AND EXISTS (SELECT 1 FROM ticket_workflow_task tq WHERE tq.ticket_id=t.id AND tq.queue_code=? AND tq.status IN ('OPEN','CLAIMED'))");args.add(query.teamQueueCode());
+            appendTeamScope(sql,args,query.teamQueueScope());
+        }
+    }
+
+    private void appendTeamScope(StringBuilder sql,List<Object>args,cn.servicehub.ticket.domain.TicketAccessScope scope){sql.append(" AND (");boolean and=false;and=appendIn(sql,args,"t.requester_organization_id",scope.organizationIds(),and);and=appendIn(sql,args,"t.service_catalog_item_id",scope.serviceCatalogItemIds(),and);if(!scope.serviceSystemCodes().isEmpty()){if(and)sql.append(" AND ");sql.append("EXISTS (SELECT 1 FROM ticket_service_system_snapshot qss WHERE qss.ticket_id=t.id AND qss.system_code IN (");placeholders(sql,scope.serviceSystemCodes().size());sql.append("))");args.addAll(scope.serviceSystemCodes());and=true;}if(!scope.configurationItemIds().isEmpty()){if(and)sql.append(" AND ");sql.append("EXISTS (SELECT 1 FROM ticket_configuration_item qci WHERE qci.ticket_id=t.id AND qci.ci_id IN (");placeholders(sql,scope.configurationItemIds().size());sql.append("))");args.addAll(scope.configurationItemIds());and=true;}if(!and)sql.append("1=0");sql.append(")");}
+
+    private boolean appendIn(StringBuilder sql, List<Object> args, String column, java.util.Set<String> values, boolean needsAnd) {
+        if (values.isEmpty()) return needsAnd;
+        if (needsAnd) sql.append(" AND "); sql.append(column).append(" IN ("); placeholders(sql, values.size()); sql.append(")"); args.addAll(values); return true;
+    }
+    private static void placeholders(StringBuilder sql, int count) { sql.append(String.join(",", java.util.Collections.nCopies(count, "?"))); }
+    private static boolean notBlank(String value) { return value != null && !value.isBlank(); }
+    static String escapeLikeLiteral(String value) { return value.replace("!", "!!").replace("%", "!%").replace("_", "!_"); }
+    private record SqlParts(String sql, List<Object> arguments) { }
 
     @Override
     public boolean updateStatus(String ticketId, long expectedVersion, TicketStatus status, Instant updatedAt) {
@@ -165,13 +261,13 @@ public class MySqlTicketRepository implements TicketRepository {
             INSERT INTO ticket (
               id, type, status, priority, title, description, description_format, description_html, structured_fields, tags, related_configuration_item_ids,
               requester_iam_user_id, requester_display_name, requester_organization_id, requester_organization_name, requester_position_name,
-              requester_captured_at, service_catalog_item_id, service_catalog_item_name, created_at, updated_at, version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              requester_captured_at, service_catalog_item_id, service_catalog_item_name, service_catalog_form_version, created_at, updated_at, version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, ticket.id(), ticket.type().name(), ticket.status().name(), ticket.priority().name(), ticket.title(), ticket.description(), ticket.descriptionFormat().name(), ticket.descriptionHtml(),
             asJson(ticket.structuredFields()), asJson(ticket.tags()), asJson(ticket.relatedConfigurationItemIds()),
             ticket.requester().iamUserId(), ticket.requester().displayName(), ticket.requester().organizationId(), ticket.requester().organizationName(),
             ticket.requester().positionName(), Timestamp.from(ticket.requester().capturedAt()), ticket.serviceCatalogItem().id(),
-            ticket.serviceCatalogItem().name(), Timestamp.from(ticket.createdAt()), Timestamp.from(ticket.updatedAt()), ticket.version());
+            ticket.serviceCatalogItem().name(), ticket.serviceCatalogFormVersion(), Timestamp.from(ticket.createdAt()), Timestamp.from(ticket.updatedAt()), ticket.version());
     }
 
     private String asJson(Object value) {
@@ -194,7 +290,7 @@ public class MySqlTicketRepository implements TicketRepository {
                     resultSet.getString("requester_organization_id"), resultSet.getString("requester_organization_name"), resultSet.getString("requester_position_name"),
                     resultSet.getTimestamp("requester_captured_at").toInstant()),
                 new ServiceCatalogSummary(resultSet.getString("service_catalog_item_id"), resultSet.getString("service_catalog_item_name")),
-                resultSet.getTimestamp("created_at").toInstant(), resultSet.getTimestamp("updated_at").toInstant(), resultSet.getLong("version"));
+                resultSet.getInt("service_catalog_form_version"), resultSet.getTimestamp("created_at").toInstant(), resultSet.getTimestamp("updated_at").toInstant(), resultSet.getLong("version"));
         } catch (Exception exception) {
             throw new SQLException("Unable to map persisted ticket", exception);
         }

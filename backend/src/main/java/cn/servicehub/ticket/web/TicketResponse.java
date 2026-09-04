@@ -13,11 +13,11 @@ import java.util.List;
 
 public record TicketResponse(String id, TicketType type, TicketStatus status, TicketPriority priority,
                              String title, String description, TicketDescriptionFormat descriptionFormat, String descriptionHtml, IdentitySnapshot requester,
-                             ServiceCatalogSummary serviceCatalogItem, List<TicketTag> tags,
+                             ServiceCatalogSummary serviceCatalogItem, int serviceCatalogFormVersion, List<TicketTag> tags,
                              Instant createdAt, Instant updatedAt, long version) {
     public static TicketResponse from(Ticket ticket) {
         return new TicketResponse(ticket.id(), ticket.type(), ticket.status(), ticket.priority(), ticket.title(),
-            ticket.description(), ticket.descriptionFormat(), ticket.descriptionHtml(), ticket.requester(), ticket.serviceCatalogItem(), ticket.tags(), ticket.createdAt(),
+            ticket.description(), ticket.descriptionFormat(), ticket.descriptionHtml(), ticket.requester(), ticket.serviceCatalogItem(), ticket.serviceCatalogFormVersion(), ticket.tags(), ticket.createdAt(),
             ticket.updatedAt(), ticket.version());
     }
 }

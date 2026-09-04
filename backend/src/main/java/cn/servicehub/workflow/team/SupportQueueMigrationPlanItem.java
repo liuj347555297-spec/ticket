@@ -1,0 +1,2 @@
+package cn.servicehub.workflow.team;
+public record SupportQueueMigrationPlanItem(String itemId,SupportQueueMigrationItemType itemType,SupportQueueMigrationItemStatus status,String ticketId,String sourceWorkflowTaskId,long sourceTicketVersion,long sourceWorkflowVersion,long sourceTaskVersion,String sourceTaskStatus,String sourceAssigneeIamUserId,String sourceQueueCode,String targetQueueCode,int attemptCount,boolean retryable,String resultCode,String errorCode,String resultResourceId,String handoverTaskId,String checklistSummary,long version) { }

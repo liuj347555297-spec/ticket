@@ -14,6 +14,9 @@ class FlowableBpmnSchemaValidationTest {
     void publishedBpmnResourcesPassFlowableSchemaValidation() {
         assertSchemaValid("processes/ticket-lifecycle.bpmn20.xml");
         assertSchemaValid("processes/controlled-jump-approval.bpmn20.xml");
+        assertSchemaValid("processes/handover-confirmation.bpmn20.xml");
+        assertSchemaValid("processes/cohandler-confirmation.bpmn20.xml");
+        assertSchemaValid("processes/lifecycle-action-approval.bpmn20.xml");
     }
 
     private void assertSchemaValid(String resource) {

@@ -7,6 +7,10 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       pool-name: servicehub-mysql
+      # MySQL should evict a connection before common load-balancer/NAT idle timeouts.
+      # Values remain deployment-controlled so a DBA can align them to its network policy.
+      max-lifetime: ${SERVICEHUB_DB_MAX_LIFETIME_MS:1500000}
+      keepalive-time: ${SERVICEHUB_DB_KEEPALIVE_MS:300000}
       maximum-pool-size: ${SERVICEHUB_DB_POOL_MAX:20}
       minimum-idle: ${SERVICEHUB_DB_POOL_MIN_IDLE:5}
       connection-timeout: ${SERVICEHUB_DB_CONNECTION_TIMEOUT_MS:3000}
@@ -17,7 +21,24 @@ spring:
     baseline-on-migrate: false
     validate-migration-naming: true
     clean-disabled: true
+    # A deployment can supply a dedicated migration identity.  The mysql profile retains
+    # datasource fallback for isolated local development; the prod profile removes it.
+    url: ${SERVICEHUB_FLYWAY_DB_URL:${SERVICEHUB_DB_URL}}
+    user: ${SERVICEHUB_FLYWAY_DB_USERNAME:${SERVICEHUB_DB_USERNAME}}
+    password: ${SERVICEHUB_FLYWAY_DB_PASSWORD:${SERVICEHUB_DB_PASSWORD}}
   transaction:
     # Flowable bootstraps and upgrades its own ACT_* schema in a single transaction.  Ten seconds
     # is safe for ordinary requests but too short for that controlled startup operation.
     default-timeout: 60s
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: db
+servicehub:
+  workflow:
+    # New service-catalog routing: a selected system enters accept after server-side first-line assignment.
+    direct-accept-routing: ${SERVICEHUB_DIRECT_ACCEPT_ROUTING:true}

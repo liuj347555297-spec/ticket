@@ -44,6 +44,16 @@ sudo journalctl -u mysql --since '15 minutes ago' --no-pager
 
 若服务启动失败，先查看上述日志、磁盘空间与端口占用；不得通过删除数据目录或重装数据库作为首次处理手段。
 
+### Windows 后端连接 WSL2 的补充
+
+本机当前采用 WSL2 NAT 虚拟网卡供 Windows 上的 Spring Boot 访问 MySQL。MySQL 监听 WSL 虚拟网卡，但应用账号只授权给 Windows 网关地址；不得创建 `%` 通配来源账号，也不得映射到局域网或公网。WSL 虚拟 IP 可能在完全关闭 WSL 后变化，应以 `hostname -I` 重新确认，并仅更新已忽略的 `backend/.env.local`，不得把实际地址或任何密钥提交 Git。
+
+若 WSL 被系统自动休眠，Windows 后端会出现 `Connection refused`。开发期间可在一个专用 PowerShell 窗口保持以下无密钥会话，关闭该窗口即结束保活；完成开发后按常规方式停止 MySQL：
+
+```powershell
+wsl -d Ubuntu -u root -- bash -lc 'service mysql start; exec tail -f /dev/null'
+```
+
 ## 3. 建库与专用账号原则
 
 由本机数据库管理员执行建库、账号创建与授权。账号仅允许从明确来源主机连接（本机常用 `localhost`），账号命名、数据库名和授权语句以本机规范为准。
@@ -97,6 +107,10 @@ SERVICEHUB_DB_PASSWORD=<SECRET>
 
 **回滚原则：** Flyway 社区版通常以“前向修复”为主。对不可逆 DDL、数据回填、删列/删表，必须在迁移评审中提供已验证的备份恢复或显式补偿迁移；未验证恢复前不得执行破坏性变更。
 
+### 5.1 V26 新库基线
+
+历史迁移 `V1`–`V34` 仍必须保留，服务已经升级的环境继续依赖它们进行校验、审计和前向升级。为新建空库准备的当前压缩初版结构、Flowable 7.2.0 独立结构和可选合成演示数据位于 [`database-baseline`](database-baseline/README.md)。该基线只可用于空库，并在首次导入后受控登记 Flyway `baseline-version=34`；不得在已有业务库、已有 Flyway 历史库或生产 IAM 数据库上启用基线登记。后续功能仅新增 `V35+` 迁移。
+
 ## 6. 备份、恢复与本机清理
 
 - 变更前使用经批准的备份流程导出目标开发库；备份文件按本机加密与访问控制要求保存，禁止提交 Git 或上传到非授权位置。
@@ -115,6 +129,8 @@ SERVICEHUB_DB_PASSWORD=<SECRET>
 
 本机开发使用私有 `backend/.env.local` 注入数据库连接信息，并显式启用 `mysql,local-dev` profiles。`local-dev` 仅为 loopback 开发身份与虚构 IAM 夹具服务，不能复制至其他环境；虚构 IAM、服务目录和字典夹具初始化器只在 `mysql` 与 `local-dev` 同时启用时运行，避免 H2 演示模式误执行 MySQL 投影 SQL。
 
+`local-dev` 会使用仅限该 profile 的附件扫描绕过适配器，以便在未接入企业 ICAP/杀毒平台的工作站完成页面和上传联调。文件类型、大小、对象权限、随机存储键与审计仍生效；`prod` profile 不会加载该适配器，生产附件必须接入扫描并在通过前保持隔离。
+
 多身份演练时，可在本机浏览器或测试客户端附加 `X-ServiceHub-Dev-Identity` 请求头选择固定档案：`requester`、`first-line`、`service-manager`、`admin`。该头只接受上述固定编码，服务端自行映射固定 IAM ID 与最小角色集；未知编码不会降级为管理员，也不能传入任意用户、角色或组织。未提供该头时仅为保持既有本地兼容性使用 `admin` 夹具。此机制仅在 `local-dev` profile 与 loopback 请求同时成立时存在。
 
-启动后应验证以下不含敏感信息的结果：前端开发服务仅监听 `127.0.0.1:5173`；后端监听本机 `8080`；Flyway 校验并迁移目标开发库；`GET /api/v1/tickets?queue=MY_TODO` 返回当前开发身份的服务端队列。不得将环境文件、命令输出中的连接信息或数据库凭据复制至本文档、Git 或工单。
+启动后应验证以下不含敏感信息的结果：前端开发服务仅监听 `127.0.0.1:1525`；后端默认监听本机 `8080`（如被其他本地项目占用，可显式改用 `18080`）；Flyway 校验并迁移目标开发库；`GET /api/v1/tickets?queue=MY_TODO` 返回当前开发身份的服务端队列。不得将环境文件、命令输出中的连接信息或数据库凭据复制至本文档、Git 或工单。

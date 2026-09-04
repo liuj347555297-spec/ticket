@@ -22,7 +22,9 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration
-@EnableConfigurationProperties({SecurityProperties.class, IamSsoProperties.class})
+@EnableConfigurationProperties({SecurityProperties.class, IamSsoProperties.class,
+    cn.servicehub.ticket.application.TicketPaginationProperties.class,
+    cn.servicehub.workflow.team.SupportQueueIdempotencyProperties.class})
 public class SecurityConfiguration {
 
     /**

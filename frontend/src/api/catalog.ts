@@ -1,14 +1,16 @@
 import { ApiError, apiRequest } from '@/api/client'
 import type { TicketTag, TicketType } from '@/api/tickets'
 
-export type FormFieldType = 'TEXT' | 'TEXTAREA' | 'NUMBER' | 'DATE' | 'DATETIME' | 'BOOLEAN' | 'SINGLE_SELECT' | 'MULTI_SELECT' | 'RADIO' | 'CHECKBOX_GROUP' | 'ERROR_CODE' | 'TAGS'
+export type FormFieldType = 'TEXT' | 'TEXTAREA' | 'LONG_TEXT' | 'NUMBER' | 'DATE' | 'DATETIME' | 'BOOLEAN' | 'SINGLE_SELECT' | 'MULTI_SELECT' | 'RADIO' | 'CHECKBOX_GROUP' | 'ERROR_CODE' | 'TAGS' | 'CI_REFERENCE' | 'RICH_TEXT'
 export type FieldSensitivity = 'INTERNAL' | 'SENSITIVE'
 export type FieldMasking = 'NONE' | 'PARTIAL' | 'FULL'
 
 export interface StandardTag { code: string; name: string; lifecycleStatus: 'DRAFT' | 'PENDING_REVIEW' | 'PUBLISHED' | 'RETIRED' | 'REJECTED' }
 export interface ServiceCatalogItem { id: string; code: string; name: string; summary?: string; ticketType: TicketType; categoryCode: string; publishedVersion: number; formSchemaHash: string; tags?: StandardTag[] }
 export interface ServiceCatalogItemPage { items: ServiceCatalogItem[]; page: number; pageSize: number; total: number }
-export interface FormField { code: string; label: string; helpText?: string; type: FormFieldType; required: boolean; displayOrder: number; dictionaryCode?: string; validation?: { minLength?: number; maxLength?: number; minimum?: number; maximum?: number; patternCode?: string }; sensitivity: FieldSensitivity; masking: FieldMasking; allowRuleMatching?: boolean }
+export type FormConditionOperator = 'EQUALS' | 'NOT_EQUALS' | 'IN' | 'NOT_IN' | 'HAS_VALUE' | 'NO_VALUE'
+export interface FormCondition { fieldCode: string; operator: FormConditionOperator; values: string[] }
+export interface FormField { code: string; label: string; helpText?: string; defaultValue?: string; type: FormFieldType; required: boolean; displayOrder: number; dictionaryCode?: string; visibleWhen?: FormCondition[]; requiredWhen?: FormCondition[]; validation?: { minLength?: number; maxLength?: number; minimum?: number; maximum?: number; patternCode?: string }; sensitivity: FieldSensitivity; masking: FieldMasking; allowRuleMatching?: boolean }
 export interface TagPolicy { allowStandardTags: boolean; allowFreeTags: boolean; maxTags: number; allowedStandardTagCodes?: string[] }
 export interface PublishedServiceCatalogForm { serviceCatalogItem: ServiceCatalogItem; formVersion: number; formSchemaHash: string; fields: FormField[]; tagPolicy: TagPolicy; publishedAt?: string }
 export interface DictionaryEntry { code: string; label: string; parentCode?: string; displayOrder?: number }
@@ -17,6 +19,17 @@ export interface RuleMatchRequest { serviceCatalogItemId: string; formVersion: n
 export interface RuleMatch { ruleCode: string; matchedFacts: string[]; suggestion: { kind: 'KNOWLEDGE_ARTICLE' | 'RESOLVED_CASE'; referenceId?: string; title: string; summary: string; action: 'READ_AND_TRY' | 'CONTINUE_CREATE' } }
 export interface RuleMatchResponse { ruleEngine: 'DETERMINISTIC_RULES'; matches: RuleMatch[] }
 export interface CatalogResult<T> { data: T; source: 'api' | 'demo' }
+
+/** Back-office contract. These types intentionally mirror ServiceCatalogAdminController, not the requester form contract. */
+export type FormConfigurationStatus = 'DRAFT' | 'PENDING_REVIEW' | 'PUBLISHED' | 'RETIRED' | 'REJECTED'
+export type ConfigurableFormFieldType = 'TEXT' | 'LONG_TEXT' | 'SINGLE_SELECT' | 'MULTI_SELECT' | 'DATETIME' | 'BOOLEAN' | 'TAGS' | 'CI_REFERENCE' | 'RICH_TEXT'
+export interface ManagedFormField { code: string; label: string; type: ConfigurableFormFieldType; required: boolean; defaultValue?: string; helpText?: string; maxLength?: number; dictionaryCode?: string; displayOrder: number; visibleWhen: FormCondition[]; requiredWhen: FormCondition[] }
+export interface ManagedFormConfiguration { id: string; code: string; name: string; summary?: string; ticketType: TicketType; categoryCode: string; applicableOrganizationIds: string[]; fields: ManagedFormField[]; tagPolicy: TagPolicy; lifecycleStatus: FormConfigurationStatus; version: number; formVersion: number; schemaHash: string; changeReason?: string }
+export interface ManagedFormConfigurationPage { items: ManagedFormConfiguration[]; page: number; pageSize: number; total: number }
+export interface ManagedFormDraftInput { version: number; code: string; name: string; summary?: string; ticketType: TicketType; categoryCode: string; applicableOrganizationIds: string[]; fields: ManagedFormField[]; tagPolicy: TagPolicy; reason: string }
+export interface FormPublicationResponse { requestId: string; status: FormConfigurationStatus; requestedVersion: number }
+export type NodeAssignmentMode = 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS' | 'SHARED_QUEUE'
+export interface WorkflowNodeAssignmentPolicy { serviceCatalogItemId: string; nodeKey: 'accept' | 'processing' | 'user_feedback' | 'closure'; mode: NodeAssignmentMode; candidateRoles: string[]; version: number; enabled: boolean }
 
 const hash = '7a616396c2c4bb34e0174fa5b18ba30435fd30cd2c6ef1872da44276709f2b9a'
 const demoItems: ServiceCatalogItem[] = [
@@ -67,4 +80,27 @@ export const catalogApi = {
   async getPublishedForm(itemId: string): Promise<CatalogResult<PublishedServiceCatalogForm>> { try { return { data: await apiRequest<PublishedServiceCatalogForm>(`/service-catalog/items/${encodeURIComponent(itemId)}/form`), source: 'api' } } catch (error) { const form = demoForms[itemId]; if (!form) throw error; return fallback(error, form) } },
   async listDictionaryEntries(dictionaryCode: string, serviceCatalogItemId: string, formVersion: number, fieldCode: string): Promise<CatalogResult<DictionaryEntryPage>> { const params = new URLSearchParams({ serviceCatalogItemId, formVersion: String(formVersion), fieldCode }); try { return { data: await apiRequest<DictionaryEntryPage>(`/service-catalog/dictionaries/${encodeURIComponent(dictionaryCode)}/entries?${params.toString()}`), source: 'api' } } catch (error) { return fallback(error, { items: demoDictionaries[dictionaryCode] ?? [], formVersion: demoForms[serviceCatalogItemId]?.formVersion ?? 1 }) } },
   async matchRules(request: RuleMatchRequest): Promise<CatalogResult<RuleMatchResponse>> { try { return { data: await apiRequest<RuleMatchResponse>('/service-catalog/rule-matches', { method: 'POST', headers: { 'Idempotency-Key': crypto.randomUUID() }, body: request }), source: 'api' } } catch (error) { return fallback(error, demoMatch(request)) } },
+}
+
+/** Administrative mutations use a new idempotency key and carry both the body version and If-Match version. */
+const administrationHeaders = (version?: number): Record<string, string> => ({
+  'Idempotency-Key': crypto.randomUUID(),
+  ...(version === undefined ? {} : { 'If-Match': `"${version}"` }),
+})
+
+export const serviceCatalogAdminApi = {
+  list(status?: FormConfigurationStatus): Promise<ManagedFormConfigurationPage> {
+    const params = new URLSearchParams({ page: '1', pageSize: '100' })
+    if (status) params.set('status', status)
+    return apiRequest<ManagedFormConfigurationPage>(`/admin/service-catalog/items?${params.toString()}`)
+  },
+  get(id: string): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>(`/admin/service-catalog/items/${encodeURIComponent(id)}`) },
+  create(input: ManagedFormDraftInput): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>('/admin/service-catalog/items', { method: 'POST', headers: administrationHeaders(), body: input }) },
+  update(id: string, input: ManagedFormDraftInput): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>(`/admin/service-catalog/items/${encodeURIComponent(id)}`, { method: 'PUT', headers: administrationHeaders(input.version), body: input }) },
+  requestPublish(id: string, version: number, reason: string): Promise<FormPublicationResponse> { return apiRequest<FormPublicationResponse>(`/admin/service-catalog/items/${encodeURIComponent(id)}/publish-requests`, { method: 'POST', headers: administrationHeaders(version), body: { version, reason } }) },
+  approve(id: string, requestId: string, version: number): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>(`/admin/service-catalog/items/${encodeURIComponent(id)}/publish-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', headers: administrationHeaders(version) }) },
+  retire(id: string, version: number, reason: string): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>(`/admin/service-catalog/items/${encodeURIComponent(id)}/retire`, { method: 'POST', headers: administrationHeaders(version), body: { version, reason } }) },
+  rollback(id: string, version: number, sourceFormVersion: number, reason: string): Promise<ManagedFormConfiguration> { return apiRequest<ManagedFormConfiguration>(`/admin/service-catalog/items/${encodeURIComponent(id)}/rollback`, { method: 'POST', headers: administrationHeaders(version), body: { sourceFormVersion, reason } }) },
+  listRoutingPolicies(id: string): Promise<WorkflowNodeAssignmentPolicy[]> { return apiRequest<WorkflowNodeAssignmentPolicy[]>(`/admin/service-catalog/items/${encodeURIComponent(id)}/workflow-node-policies`) },
+  saveRoutingPolicy(id: string, policy: WorkflowNodeAssignmentPolicy): Promise<WorkflowNodeAssignmentPolicy> { return apiRequest<WorkflowNodeAssignmentPolicy>(`/admin/service-catalog/items/${encodeURIComponent(id)}/workflow-node-policies/${policy.nodeKey}`, { method: 'PUT', headers: administrationHeaders(policy.version), body: { mode: policy.mode, candidateRoles: policy.candidateRoles, enabled: policy.enabled } }) },
 }

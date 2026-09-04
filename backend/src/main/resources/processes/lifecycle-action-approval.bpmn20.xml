@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:flowable="http://flowable.org/bpmn" targetNamespace="cn.servicehub.workflow">
+  <process id="servicehubLifecycleActionApproval" name="High risk lifecycle action approval" isExecutable="true">
+    <startEvent id="start"/><sequenceFlow id="start_to_approval" sourceRef="start" targetRef="lifecycle_action_approval_decision"/>
+    <userTask id="lifecycle_action_approval_decision" name="高风险工单动作审批" flowable:assignee="${approvalCandidate}">
+      <multiInstanceLoopCharacteristics isSequential="false" flowable:collection="approvalCandidates" flowable:elementVariable="approvalCandidate">
+        <completionCondition>${approvalOutcome == 'APPROVED' || approvalOutcome == 'REJECTED'}</completionCondition>
+      </multiInstanceLoopCharacteristics>
+    </userTask>
+    <sequenceFlow id="approval_to_gateway" sourceRef="lifecycle_action_approval_decision" targetRef="decision_gateway"/><exclusiveGateway id="decision_gateway"/>
+    <sequenceFlow id="approved" sourceRef="decision_gateway" targetRef="approved_end"><conditionExpression xsi:type="tFormalExpression"><![CDATA[${approvalOutcome == 'APPROVED'}]]></conditionExpression></sequenceFlow>
+    <sequenceFlow id="rejected" sourceRef="decision_gateway" targetRef="rejected_end"><conditionExpression xsi:type="tFormalExpression"><![CDATA[${approvalOutcome == 'REJECTED'}]]></conditionExpression></sequenceFlow>
+    <endEvent id="approved_end" name="审批通过"/><endEvent id="rejected_end" name="审批拒绝"/>
+  </process>
+</definitions>

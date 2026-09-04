@@ -10,17 +10,39 @@ public interface TicketWorkflowRepository {
     boolean updateInstance(WorkflowInstance replacement, long expectedVersion);
     Optional<WorkflowTask> findOpenTask(String ticketId, String nodeKey);
     void saveTask(WorkflowTask task);
+    boolean claimOpenTask(String taskId, long expectedVersion, String queueCode, String assigneeIamUserId, java.time.Instant at);
+    long countOpenTasksByQueue(String queueCode);
+    long countClaimedTasksByQueue(String queueCode);
+    long migrateOpenTasks(String sourceQueueCode, String targetQueueCode);
+    List<WorkflowTask> findActiveTasksByQueue(String queueCode);
+    boolean migrateOpenTask(String taskId,long expectedVersion,String sourceQueueCode,String targetQueueCode,String ticketId,long expectedTicketVersion,long expectedWorkflowVersion,java.time.Instant at);
     List<WorkflowTask> findTasks(String ticketId);
     List<String> findTodoTicketIds(String iamUserId, java.util.Set<String> authorities);
     List<String> findCompletedTicketIds(String iamUserId);
     void addCoHandler(String ticketId, String iamUserId, java.time.Instant at);
     boolean hasCoHandler(String ticketId, String iamUserId);
+    void addDelegation(TicketDelegation delegation);
+    boolean hasActiveDelegation(String ticketId, String delegatorIamUserId, String delegateIamUserId, java.time.Instant at);
     void replacePrimaryParticipant(String ticketId, IdentitySnapshot identity, java.time.Instant at);
     void addCoHandlerParticipant(String ticketId, IdentitySnapshot identity, java.time.Instant at);
     void clearPrimaryParticipant(String ticketId, java.time.Instant at);
     List<WorkflowParticipant> findActiveParticipants(String ticketId);
     void addComment(WorkflowComment comment);
     List<WorkflowComment> findComments(String ticketId);
+    void addHandoverRequest(HandoverRequest request);
+    List<HandoverRequest> findHandoverRequests(String ticketId);
+    Optional<HandoverRequest> findHandoverRequest(String ticketId, String requestId);
+    Optional<HandoverRequest> findHandoverRequestById(String requestId);
+    /** Atomically applies a Flowable-confirmed result if the ticket/workflow source has not changed. */
+    boolean finalizeHandoverRequest(String ticketId, String requestId, String decision, String reason, java.time.Instant decidedAt,
+                                    long sourceTicketVersion, long sourceWorkflowVersion);
+    void addCoHandlerRequest(CoHandlerRequest request);
+    List<CoHandlerRequest> findCoHandlerRequests(String ticketId);
+    Optional<CoHandlerRequest> findCoHandlerRequest(String ticketId, String requestId);
+    Optional<CoHandlerRequest> findCoHandlerRequestById(String requestId);
+    /** Applies a Flowable-confirmed result only when the ticket/workflow source is unchanged. */
+    boolean finalizeCoHandlerRequest(String ticketId, String requestId, String decision, String reason, java.time.Instant decidedAt,
+                                     long sourceTicketVersion, long sourceWorkflowVersion);
     void addJumpRequest(ControlledJumpRequest request);
     List<ControlledJumpRequest> findJumpRequests(String ticketId);
     java.util.Optional<ControlledJumpRequest> findJumpRequest(String ticketId, String requestId);

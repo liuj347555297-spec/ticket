@@ -1,0 +1,61 @@
+name: production-readiness
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# The internal runner is pre-provisioned with Java 21, Node/npm, Maven, Syft, Trivy, Gitleaks,
+# Docker and its offline vulnerability database mirror.  The scan script fails closed when any of
+# those attested capabilities is missing or stale; it must not be replaced by an internet download.
+permissions:
+  contents: read
+
+jobs:
+  quality-and-supply-chain:
+    runs-on: [self-hosted, linux, x64, servicehub-secure]
+    timeout-minutes: 45
+    env:
+      SERVICEHUB_SECURITY_ARTIFACT_DIR: ${{ github.workspace }}/output/security
+      # This repository variable must hold an approved registry digest, not a tag. Registry access
+      # is provided by the runner's workload identity rather than stored in this workflow.
+      SERVICEHUB_BACKEND_IMAGE: ${{ vars.SERVICEHUB_BACKEND_IMAGE }}
+      SERVICEHUB_FRONTEND_IMAGE: ${{ vars.SERVICEHUB_FRONTEND_IMAGE }}
+      SERVICEHUB_BUILD_IMAGE: ${{ vars.SERVICEHUB_BUILD_IMAGE }}
+      SERVICEHUB_RUNTIME_IMAGE: ${{ vars.SERVICEHUB_RUNTIME_IMAGE }}
+      SERVICEHUB_NODE_BUILD_IMAGE: ${{ vars.SERVICEHUB_NODE_BUILD_IMAGE }}
+      SERVICEHUB_NGINX_IMAGE: ${{ vars.SERVICEHUB_NGINX_IMAGE }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Static source and deployment hardening gate
+        run: |
+          bash devops/ci/verify-source-security.sh
+          : "${SERVICEHUB_BACKEND_IMAGE:?Repository variable SERVICEHUB_BACKEND_IMAGE is required}"
+          : "${SERVICEHUB_FRONTEND_IMAGE:?Repository variable SERVICEHUB_FRONTEND_IMAGE is required}"
+          bash devops/ci/verify-container-input.sh
+
+      - name: Backend test suite
+        working-directory: backend
+        run: mvn -B test
+
+      - name: Frontend type-check and production build
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run build
+
+      - name: SBOM, secrets, source and image vulnerability scans
+        run: bash devops/ci/run-security-scans.sh
+
+      - name: Archive supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: supply-chain-evidence-${{ github.run_id }}
+          path: output/security/
+          if-no-files-found: warn
+          retention-days: 90

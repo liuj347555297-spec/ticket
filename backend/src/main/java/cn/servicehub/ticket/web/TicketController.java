@@ -8,6 +8,7 @@ import cn.servicehub.ticket.application.TicketRelationService;
 import cn.servicehub.ticket.domain.CreateTicketResult;
 import cn.servicehub.ticket.domain.TicketStatus;
 import cn.servicehub.ticket.domain.TicketQueue;
+import cn.servicehub.ticket.domain.TicketPriority;
 import cn.servicehub.ticket.domain.TicketType;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
@@ -50,9 +51,17 @@ public class TicketController {
         @RequestParam(defaultValue = "20") @Min(1) @Max(100) int pageSize,
         @RequestParam(required = false) TicketStatus status,
         @RequestParam(required = false) TicketType type,
+        @RequestParam(required = false) TicketPriority priority,
+        @RequestParam(name = "serviceCatalog", required = false) @Size(min = 1, max = 100) String serviceCatalog,
+        @RequestParam(name = "requesterOrganization", required = false) @Size(min = 1, max = 100) String requesterOrganization,
+        @RequestParam(required = false) java.time.LocalDate createdFrom,
+        @RequestParam(required = false) java.time.LocalDate createdTo,
         @RequestParam(required = false) TicketQueue queue,
+        @RequestParam(required=false)@Pattern(regexp="^[A-Z][A-Z0-9_-]{1,63}$")String teamQueueCode,
+        @RequestParam(required = false) @Size(max = 4096) String cursor,
         @RequestParam(name = "q", required = false) @Size(min = 1, max = 100) String keyword) {
-        return TicketPageResponse.from(ticketService.list(page, pageSize, status, type, keyword, queue));
+        return TicketPageResponse.from(ticketService.list(page, pageSize, status, type, priority, serviceCatalog,
+            requesterOrganization, createdFrom, createdTo, keyword, queue,teamQueueCode, cursor));
     }
 
     @PostMapping
@@ -62,7 +71,7 @@ public class TicketController {
         TicketDescription description = descriptionSanitizer.sanitize(request.description(), request.descriptionFormat());
         CreateTicketResult result = ticketService.create(new TicketCreateCommand(request.serviceCatalogItemId(), request.serviceCatalogFormVersion(), request.type(),
             normalize(request.title()), description.plainText(), description.format(), description.sanitizedHtml(), request.structuredFields(), toTags(request.tags()),
-            request.relatedConfigurationItemIds()), idempotencyKey);
+            request.relatedConfigurationItemIds(), request.serviceSystemCode(), request.serviceSystemModuleCode()), idempotencyKey);
         HttpHeaders headers = new HttpHeaders();
         headers.setLocation(URI.create("/api/v1/tickets/" + result.ticket().id()));
         if (result.replayed()) {

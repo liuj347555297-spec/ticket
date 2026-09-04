@@ -1,0 +1,30 @@
+-- High-risk lifecycle actions are intentionally isolated from controlled-jump approvals.
+-- The request captures the immutable source and Flowable definition selected at submission.
+CREATE TABLE ticket_lifecycle_action_approval_request (
+    id CHAR(36) NOT NULL,
+    ticket_id VARCHAR(24) NOT NULL,
+    action_code VARCHAR(32) NOT NULL,
+    applicant_iam_user_id VARCHAR(128) NOT NULL,
+    reason VARCHAR(1000) NOT NULL,
+    source_ticket_version BIGINT NOT NULL,
+    source_workflow_version BIGINT NOT NULL,
+    approval_engine_instance_id VARCHAR(64) NOT NULL,
+    approval_process_key VARCHAR(128) NOT NULL,
+    approval_process_definition_id VARCHAR(128) NOT NULL,
+    approval_process_version INT NOT NULL,
+    approval_candidate_roles_json JSON NOT NULL,
+    approval_candidate_iam_user_ids_json JSON NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    approver_iam_user_id VARCHAR(128) NULL,
+    decision_reason VARCHAR(1000) NULL,
+    decided_at DATETIME(6) NULL,
+    executed_at DATETIME(6) NULL,
+    created_at DATETIME(6) NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_lifecycle_action_approval_engine (approval_engine_instance_id),
+    KEY idx_lifecycle_action_approval_ticket (ticket_id, created_at DESC),
+    KEY idx_lifecycle_action_approval_status (status, created_at DESC),
+    CONSTRAINT ck_lifecycle_action_approval_action CHECK (action_code IN ('HOLD', 'ESCALATE', 'CANCEL', 'REOPEN')),
+    CONSTRAINT ck_lifecycle_action_approval_status CHECK (status IN ('PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXECUTED', 'STALE')),
+    CONSTRAINT fk_lifecycle_action_approval_ticket FOREIGN KEY (ticket_id) REFERENCES ticket(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

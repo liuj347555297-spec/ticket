@@ -34,6 +34,12 @@ export const useSessionStore = defineStore('session', {
               organizationName: result.data.user.organization.name,
             }
           : null
+      } catch (error) {
+        // Never retain a previous subject or capability projection after identity refresh fails.
+        this.currentUser = null
+        this.authorization = null
+        this.source = null
+        throw error
       } finally {
         this.loading = false
       }

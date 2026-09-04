@@ -1,0 +1,72 @@
+# Production hardening overlay. Always activate with the mysql profile:
+# SPRING_PROFILES_ACTIVE=mysql,prod,clamav
+#
+# Sensitive values intentionally have no defaults. Missing values fail startup instead of
+# silently connecting with a local/developer identity.
+spring:
+  datasource:
+    url: ${SERVICEHUB_DB_URL}
+    username: ${SERVICEHUB_DB_USERNAME}
+    password: ${SERVICEHUB_DB_PASSWORD}
+  flyway:
+    # Production migrations use a separately governed credential. Do not grant application
+    # runtime DDL privileges merely to make startup convenient.
+    url: ${SERVICEHUB_FLYWAY_DB_URL}
+    user: ${SERVICEHUB_FLYWAY_DB_USERNAME}
+    password: ${SERVICEHUB_FLYWAY_DB_PASSWORD}
+  lifecycle:
+    timeout-per-shutdown-phase: ${SERVICEHUB_SHUTDOWN_TIMEOUT:30s}
+  servlet:
+    multipart:
+      location: ${SERVICEHUB_MULTIPART_TEMP_DIR:/var/lib/servicehub/tmp}
+
+flowable:
+  # Schema creation/upgrades must be a separately approved maintenance activity. This prevents
+  # an ordinary rolling deployment from issuing unreviewed DDL against ACT_* tables.
+  database-schema-update: false
+
+server:
+  shutdown: graceful
+  forward-headers-strategy: framework
+
+servicehub:
+  workflow:
+    # Production enables only the server-owned catalog-to-first-line routing path.
+    direct-accept-routing: ${SERVICEHUB_DIRECT_ACCEPT_ROUTING:true}
+  attachment:
+    # Must be a mounted non-web-accessible writable volume. The container filesystem is not a
+    # persistence target for uploads.
+    storage-root: ${SERVICEHUB_ATTACHMENT_STORAGE_ROOT}
+    clamav:
+      enabled: ${SERVICEHUB_CLAMAV_ENABLED}
+      host: ${SERVICEHUB_CLAMAV_HOST}
+      allowed-hosts: ${SERVICEHUB_CLAMAV_ALLOWED_HOSTS}
+      port: ${SERVICEHUB_CLAMAV_PORT}
+      connect-timeout: ${SERVICEHUB_CLAMAV_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SERVICEHUB_CLAMAV_READ_TIMEOUT:5s}
+      total-timeout: ${SERVICEHUB_CLAMAV_TOTAL_TIMEOUT:15s}
+      chunk-size-bytes: ${SERVICEHUB_CLAMAV_CHUNK_SIZE_BYTES:65536}
+      max-response-bytes: ${SERVICEHUB_CLAMAV_MAX_RESPONSE_BYTES:4096}
+  security:
+    # Comma-separated HTTPS portal origins; absence deliberately aborts configuration binding.
+    allowed-origins: ${SERVICEHUB_SECURITY_ALLOWED_ORIGINS}
+    allow-direct-test-identities: false
+  ticket:
+    pagination:
+      # At least 32 UTF-8 bytes, generated independently for each environment and injected by the
+      # managed secret platform. Missing/short values abort configuration binding at startup.
+      cursor-signing-key: ${SERVICEHUB_TICKET_CURSOR_SIGNING_KEY}
+      cursor-ttl: ${SERVICEHUB_TICKET_CURSOR_TTL:15m}
+  support-queue:
+    idempotency:
+      current-key-version: ${SERVICEHUB_SUPPORT_QUEUE_HMAC_CURRENT_VERSION}
+      key-ring: ${SERVICEHUB_SUPPORT_QUEUE_HMAC_KEY_RING}
+      lease-duration: ${SERVICEHUB_SUPPORT_QUEUE_IDEMPOTENCY_LEASE:2m}
+
+management:
+  endpoint:
+    health:
+      show-details: never
+  health:
+    db:
+      enabled: true

@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -30,6 +31,14 @@ public class WorkflowController {
         ticketService.get(ticketId); // performs server-side object authorization before collaboration data is disclosed
         return workflowService.overview(ticketId);
     }
+    @GetMapping("/diagram")
+    cn.servicehub.workflow.engine.WorkflowBpmnDiagram diagram(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId) {
+        ticketService.get(ticketId);
+        return workflowService.diagram(ticketId);
+    }
+    @GetMapping("/next-handler-candidates")
+    java.util.List<cn.servicehub.workflow.routing.NodeAssignmentResolver.HandlerCandidate> nextHandlerCandidates(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @RequestParam @Pattern(regexp = "^processing$") String targetNode) { ticketService.get(ticketId); return workflowService.nextHandlerCandidates(ticketId, targetNode); }
 
     @PostMapping("/actions")
     TicketResponse action(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
@@ -44,6 +53,32 @@ public class WorkflowController {
     cn.servicehub.workflow.domain.ControlledJumpRequest decide(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
         @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId, @Valid @RequestBody ApprovalDecisionRequest request) {
         return workflowService.decideJumpRequest(ticketId, requestId, request.decision(), request.reason());
+    }
+
+    @PostMapping("/handover-requests/{requestId}/decisions")
+    cn.servicehub.workflow.domain.HandoverRequest decideHandover(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId, @Valid @RequestBody HandoverDecisionRequest request) {
+        return workflowService.decideHandover(ticketId, requestId, request.decision(), request.reason());
+    }
+
+    @PostMapping("/cohandler-requests/{requestId}/decisions")
+    cn.servicehub.workflow.domain.CoHandlerRequest decideCoHandler(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId, @Valid @RequestBody HandoverDecisionRequest request) {
+        return workflowService.decideCoHandler(ticketId, requestId, request.decision(), request.reason());
+    }
+
+    @PostMapping("/delegations")
+    cn.servicehub.workflow.domain.TicketDelegation delegate(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @Valid @RequestBody DelegationRequest request) {
+        return workflowService.createDelegation(ticketId, request.delegateIamUserId(), request.effectiveUntil().toInstant(), request.reason());
+    }
+
+    @PostMapping("/lifecycle-approval-requests/{requestId}/decisions")
+    cn.servicehub.workflow.application.LifecycleActionApprovalSummary decideLifecycleAction(
+        @PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
+        @PathVariable @Pattern(regexp = "^[0-9a-fA-F-]{36}$") String requestId, @Valid @RequestBody ApprovalDecisionRequest request) {
+        return cn.servicehub.workflow.application.LifecycleActionApprovalSummary.from(
+            workflowService.decideLifecycleActionApproval(ticketId, requestId, request.decision(), request.reason()));
     }
 
     @GetMapping("/approval-requests/{requestId}/preflight")

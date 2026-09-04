@@ -28,7 +28,9 @@ public class BackofficeAccessService {
     public static final String PLATFORM_ADMIN = "ROLE_PLATFORM_ADMIN";
     private static final Set<String> ASSIGNABLE_ROLES = Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT",
         "ROLE_APPROVER", "ROLE_SERVICE_MANAGER", "ROLE_SLA_MANAGER", "ROLE_AUDITOR", PLATFORM_ADMIN);
-    private static final Set<String> SCOPE_TYPES = Set.of("ORGANIZATION", "SERVICE", "QUEUE", "CONFIGURATION_ITEM");
+    /** QUEUE grants remain representable for compatibility but ticket authorization fails closed until snapshots exist. */
+    private static final Set<String> SCOPE_TYPES = Set.of("ORGANIZATION", "SERVICE", "SERVICE_CATALOG",
+        "SERVICE_SYSTEM", "CONFIGURATION_ITEM", "QUEUE");
     private static final Pattern IAM_ID = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
     private static final Pattern SCOPE_ID = Pattern.compile("^[A-Za-z0-9._:-]{1,128}$");
     private final BackofficeAccessRepository repository;

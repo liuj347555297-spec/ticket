@@ -15,7 +15,13 @@ import cn.servicehub.workflow.engine.WorkflowEngineInstance;
 import cn.servicehub.workflow.engine.WorkflowApprovalDefinition;
 import cn.servicehub.workflow.engine.WorkflowEnginePort;
 import cn.servicehub.workflow.engine.WorkflowApprovalDecisionResult;
+import cn.servicehub.workflow.lifecycleapproval.engine.LifecycleActionApprovalEnginePort;
+import cn.servicehub.access.domain.BackofficeAccess;
+import cn.servicehub.access.domain.BackofficeAccessRepository;
+import cn.servicehub.access.domain.BackofficeDataScope;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -34,10 +40,22 @@ import org.springframework.test.web.servlet.MvcResult;
 class ControlledJumpFailureRollbackTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper objectMapper;
+    @Autowired BackofficeAccessRepository backofficeAccess;
     @MockBean WorkflowEnginePort workflowEngine;
+    // The production Flowable adapter implements both ports. Replacing only the lifecycle
+    // adapter in this controlled-jump failure test would leave the new independent approval
+    // port absent from the application context.
+    @MockBean LifecycleActionApprovalEnginePort lifecycleActionApprovalEngine;
 
     @BeforeEach
     void engineFailureIsPrepared() {
+        // The stricter approval-candidate contract requires a real current scope match. Keep the
+        // failure test focused on engine rollback by explicitly granting its service manager the
+        // ticket organization instead of relying on the former global role pool.
+        BackofficeAccess manager = backofficeAccess.findByIamUserId("iam-u-local-service-manager").orElseThrow();
+        backofficeAccess.save(new BackofficeAccess(manager.iamUserId(), true, manager.roleCodes(),
+            Set.of(new BackofficeDataScope("ORGANIZATION", "org-it")), manager.version() + 1, Instant.now()),
+            manager.version(), "test-admin");
         when(workflowEngine.start(anyString())).thenReturn(new WorkflowEngineInstance("lifecycle-1", "classify", "task-classify-1"));
         when(workflowEngine.resolveControlledJumpApprovalDefinition())
             .thenReturn(new WorkflowApprovalDefinition("servicehubControlledJumpApproval", "approval-definition-1", 1));
@@ -67,17 +85,17 @@ class ControlledJumpFailureRollbackTest {
             .andExpect(status().isOk()).andReturn();
         String requestId = objectMapper.readTree(overview.getResponse().getContentAsByteArray()).at("/approvalRequests/0/id").asText();
         mockMvc.perform(post("/api/v1/tickets/{id}/workflow/approval-requests/{requestId}/decisions", ticketId, requestId)
-                .with(user("iam-u-1002").roles("SERVICE_MANAGER")).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .with(user("iam-u-local-service-manager").roles("SERVICE_MANAGER")).with(csrf()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"decision\":\"APPROVED\",\"reason\":\"可执行但需验证引擎异常\"}"))
             .andExpect(status().isOk());
 
         mockMvc.perform(post("/api/v1/tickets/{id}/workflow/approval-requests/{requestId}/execute", ticketId, requestId)
-                .with(user("iam-u-1002").roles("SERVICE_MANAGER")).with(csrf()).header("If-Match", "\"0\""))
+                .with(user("iam-u-local-service-manager").roles("SERVICE_MANAGER")).with(csrf()).header("If-Match", "\"0\""))
             .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code", is("SERVICE_UNAVAILABLE")));
 
-        mockMvc.perform(get("/api/v1/tickets/{id}", ticketId).with(user("iam-u-1002").roles("SERVICE_MANAGER")))
+        mockMvc.perform(get("/api/v1/tickets/{id}", ticketId).with(user("iam-u-local-service-manager").roles("SERVICE_MANAGER")))
             .andExpect(status().isOk()).andExpect(jsonPath("$.status", is("SUBMITTED"))).andExpect(jsonPath("$.version", is(0)));
-        mockMvc.perform(get("/api/v1/tickets/{id}/workflow", ticketId).with(user("iam-u-1002").roles("SERVICE_MANAGER")))
+        mockMvc.perform(get("/api/v1/tickets/{id}/workflow", ticketId).with(user("iam-u-local-service-manager").roles("SERVICE_MANAGER")))
             .andExpect(status().isOk()).andExpect(jsonPath("$.instance.currentNode", is("classify")))
             .andExpect(jsonPath("$.tasks[0].status", is("OPEN")))
             .andExpect(jsonPath("$.approvalRequests[0].status", is("APPROVED")))

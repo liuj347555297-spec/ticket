@@ -18,13 +18,17 @@ class PlatformAuthorizationResolverTest {
     void verifiedIamSubjectStartsAsRequesterAndGetsOnlyEnabledLocalBackofficeGrant() {
         InMemoryBackofficeAccessRepository access = new InMemoryBackofficeAccessRepository();
         PlatformAuthorizationResolver resolver = new PlatformAuthorizationResolver(new InMemoryIamUserProjectionRepository(), access);
-        assertEquals(Set.of("ROLE_REQUESTER"), resolver.resolve("iam-u-1001", "OIDC").authorities());
+        var requester = resolver.resolve("iam-u-1001", "OIDC");
+        assertEquals(Set.of("ROLE_REQUESTER"), requester.authorities());
+        assertTrue(requester.trustedAuthorizationContext());
+        String requesterScopeVersion = requester.authorizationScopeVersion();
         access.save(new BackofficeAccess("iam-u-1001", true, Set.of("ROLE_FIRST_LINE_SUPPORT"),
             Set.of(new BackofficeDataScope("QUEUE", "QUEUE-DESK-01")), 1, Instant.now()), 0, "iam-u-local-admin");
         var resolved = resolver.resolve("iam-u-1001", "OIDC");
         assertTrue(resolved.authorities().contains("ROLE_REQUESTER"));
         assertTrue(resolved.authorities().contains("ROLE_FIRST_LINE_SUPPORT"));
         assertTrue(resolved.authorities().contains("DATA_SCOPE_QUEUE:QUEUE-DESK-01"));
+        assertFalse(requesterScopeVersion.equals(resolved.authorizationScopeVersion()));
         access.save(new BackofficeAccess("iam-u-1001", false, Set.of("ROLE_FIRST_LINE_SUPPORT"), Set.of(), 2, Instant.now()), 1, "iam-u-local-admin");
         assertFalse(resolver.resolve("iam-u-1001", "OIDC").authorities().contains("ROLE_FIRST_LINE_SUPPORT"));
     }

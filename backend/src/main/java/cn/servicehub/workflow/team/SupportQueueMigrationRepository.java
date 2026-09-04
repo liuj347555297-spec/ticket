@@ -1,0 +1,3 @@
+package cn.servicehub.workflow.team;
+import java.util.List;import java.util.Optional;
+public interface SupportQueueMigrationRepository {Optional<SupportQueueMigrationPlan>findPlan(String id);Optional<SupportQueueMigrationPlan>findActiveBySource(String source);List<SupportQueueMigrationPlanItem>findItems(String planId);void create(SupportQueueMigrationPlan plan,List<SupportQueueMigrationPlanItem>items);boolean updatePlan(SupportQueueMigrationPlan plan,long expectedVersion,SupportQueueMigrationPlanStatus expectedStatus);boolean updateItem(String planId,SupportQueueMigrationPlanItem item,long expectedVersion,SupportQueueMigrationItemStatus expectedStatus);}

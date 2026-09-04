@@ -1,0 +1,101 @@
+# Production deployment template. Copy devops/.env.production.example to a secret-managed
+# runtime environment; never commit the resulting .env.production file.
+services:
+  servicehub-frontend:
+    image: ${SERVICEHUB_FRONTEND_IMAGE:?Set an immutable frontend image digest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      servicehub-backend:
+        condition: service_healthy
+    ports:
+      - "${SERVICEHUB_BIND_ADDRESS:-127.0.0.1}:${SERVICEHUB_FRONTEND_PORT:-8088}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz | grep -q '^ok$'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - servicehub_internal
+
+  servicehub-backend:
+    image: ${SERVICEHUB_BACKEND_IMAGE:?Set an immutable backend image tag}
+    restart: unless-stopped
+    init: true
+    environment:
+      SPRING_PROFILES_ACTIVE: mysql,prod,clamav
+      SERVER_PORT: 8080
+      SERVICEHUB_DB_URL: ${SERVICEHUB_DB_URL:?Required}
+      SERVICEHUB_DB_USERNAME: ${SERVICEHUB_DB_USERNAME:?Required}
+      SERVICEHUB_DB_PASSWORD: ${SERVICEHUB_DB_PASSWORD:?Required}
+      SERVICEHUB_FLYWAY_DB_URL: ${SERVICEHUB_FLYWAY_DB_URL:?Required}
+      SERVICEHUB_FLYWAY_DB_USERNAME: ${SERVICEHUB_FLYWAY_DB_USERNAME:?Required}
+      SERVICEHUB_FLYWAY_DB_PASSWORD: ${SERVICEHUB_FLYWAY_DB_PASSWORD:?Required}
+      SERVICEHUB_ATTACHMENT_STORAGE_ROOT: /var/lib/servicehub/attachments
+      SERVICEHUB_CLAMAV_ENABLED: "true"
+      SERVICEHUB_CLAMAV_HOST: ${SERVICEHUB_CLAMAV_HOST:?Required approved ClamAV host}
+      SERVICEHUB_CLAMAV_ALLOWED_HOSTS: ${SERVICEHUB_CLAMAV_ALLOWED_HOSTS:?Required exact approved ClamAV hosts}
+      SERVICEHUB_CLAMAV_PORT: ${SERVICEHUB_CLAMAV_PORT:?Required approved ClamAV port}
+      SERVICEHUB_CLAMAV_CONNECT_TIMEOUT: ${SERVICEHUB_CLAMAV_CONNECT_TIMEOUT:-2s}
+      SERVICEHUB_CLAMAV_READ_TIMEOUT: ${SERVICEHUB_CLAMAV_READ_TIMEOUT:-5s}
+      SERVICEHUB_CLAMAV_TOTAL_TIMEOUT: ${SERVICEHUB_CLAMAV_TOTAL_TIMEOUT:-15s}
+      SERVICEHUB_CLAMAV_CHUNK_SIZE_BYTES: ${SERVICEHUB_CLAMAV_CHUNK_SIZE_BYTES:-65536}
+      SERVICEHUB_CLAMAV_MAX_RESPONSE_BYTES: ${SERVICEHUB_CLAMAV_MAX_RESPONSE_BYTES:-4096}
+      SERVICEHUB_MULTIPART_TEMP_DIR: /var/lib/servicehub/tmp
+      SERVICEHUB_SECURITY_ALLOWED_ORIGINS: ${SERVICEHUB_SECURITY_ALLOWED_ORIGINS:?Required}
+      SERVICEHUB_IAM_SSO_ENABLED: ${SERVICEHUB_IAM_SSO_ENABLED:false}
+      SERVICEHUB_IAM_SSO_SUBJECT_ATTRIBUTE: ${SERVICEHUB_IAM_SSO_SUBJECT_ATTRIBUTE:-sub}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_PROVIDER: servicehub
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_CLIENT_ID: ${SERVICEHUB_IAM_CLIENT_ID:?Required IAM OIDC client ID}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_CLIENT_SECRET: ${SERVICEHUB_IAM_CLIENT_SECRET:?Required IAM OIDC client secret}
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_AUTHORIZATION_GRANT_TYPE: authorization_code
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_REDIRECT_URI: "{baseUrl}/login/oauth2/code/{registrationId}"
+      SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_SERVICEHUB_SCOPE: openid,profile
+      SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_SERVICEHUB_ISSUER_URI: ${SERVICEHUB_IAM_ISSUER_URI:?Required exact IAM OIDC issuer}
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: ${SERVICEHUB_FLYWAY_BASELINE_ON_MIGRATE:-false}
+      SPRING_FLYWAY_BASELINE_VERSION: ${SERVICEHUB_FLYWAY_BASELINE_VERSION:-34}
+      SERVICEHUB_TICKET_CURSOR_SIGNING_KEY: ${SERVICEHUB_TICKET_CURSOR_SIGNING_KEY:?Required managed secret with at least 32 UTF-8 bytes}
+      SERVICEHUB_TICKET_CURSOR_TTL: ${SERVICEHUB_TICKET_CURSOR_TTL:-15m}
+    volumes:
+      - type: bind
+        source: ${SERVICEHUB_ATTACHMENT_HOST_PATH:?Required absolute host path}
+        target: /var/lib/servicehub/attachments
+      - type: bind
+        source: ${SERVICEHUB_TEMP_HOST_PATH:?Required absolute host path}
+        target: /var/lib/servicehub/tmp
+    ports:
+      # Bind to loopback by default; publish through the approved reverse proxy instead.
+      - "${SERVICEHUB_BIND_ADDRESS:-127.0.0.1}:${SERVICEHUB_BACKEND_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # This is a liveness-only probe: a protected actuator endpoint correctly returns 401 to
+      # the container. Readiness (DB included) is checked by the approved external monitor using
+      # an ACTUATOR_VIEW identity; do not make the actuator endpoint anonymous for Docker.
+      test: ["CMD-SHELL", "wget --spider http://127.0.0.1:8080/actuator/health 2>&1 | grep -q '401 Unauthorized'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - servicehub_internal
+
+networks:
+  servicehub_internal:
+    # Pre-create an approved deployment network that can reach only the managed MySQL,
+    # ClamAV and reverse-proxy paths required by this stack.
+    external: true
+    name: ${SERVICEHUB_INTERNAL_NETWORK:?Required approved Docker network}

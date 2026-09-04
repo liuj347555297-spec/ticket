@@ -1,5 +1,7 @@
 # Never activate this profile outside a developer workstation. It is deliberately separate from
 # the default and mysql profiles so production continues to accept IAM-authenticated identities only.
+# Attachment uploads still use all server-side file type, size, authorization and audit checks.
+# Only the unavailable enterprise antivirus integration is bypassed by the profile-scoped adapter.
 servicehub:
   security:
     allowed-origins:

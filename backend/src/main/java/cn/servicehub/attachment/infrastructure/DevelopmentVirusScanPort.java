@@ -2,10 +2,12 @@ package cn.servicehub.attachment.infrastructure;
 
 import cn.servicehub.attachment.application.VirusScanPort;
 import java.nio.charset.StandardCharsets;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
-/** Adapter boundary for the enterprise antivirus/ICAP client. It never declares an unknown file clean. */
+/** Deterministic scanner used only by the default development context and explicit test profile. */
 @Component
+@Profile("default | test")
 public class DevelopmentVirusScanPort implements VirusScanPort {
     private static final byte[] EICAR = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE".getBytes(StandardCharsets.US_ASCII);
     @Override public ScanResult scan(String key, byte[] content) {

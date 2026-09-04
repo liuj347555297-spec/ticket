@@ -1,5 +1,6 @@
 import { ApiError, apiRequest, apiUpload } from '@/api/client'
 import { demoTicketRepository } from '@/api/demo-tickets'
+import { workflowOutcome } from '@/utils/workflowOutcome'
 
 export type TicketType = 'INCIDENT' | 'SERVICE_REQUEST' | 'ACCESS_REQUEST' | 'PROBLEM' | 'CHANGE'
 export type TicketStatus =
@@ -73,6 +74,16 @@ export interface TicketAttachment {
   retentionState?: 'ACTIVE' | 'DELETE_REQUESTED' | 'RETAINED'
 }
 export interface TicketAttachmentPage { items: TicketAttachment[]; total: number }
+
+/** Read-only diagram data generated from the current platform-owned Flowable ticket lifecycle. */
+export interface TicketLifecyclePreview {
+  processKey: string
+  processDefinitionId: string
+  name: string
+  version: number
+  nodes: Array<{ id: string; label: string; type: 'START' | 'END' | 'USER_TASK' | 'GATEWAY' | 'ACTIVITY' }>
+  flows: Array<{ id: string; sourceNodeId: string; targetNodeId: string }>
+}
 
 interface TicketAttachmentWire {
   id: string
@@ -158,6 +169,53 @@ interface WorkflowOverviewWire {
     reason: string
     decidedAt: string
   }>
+  /** A handover is pending until its server-assigned recipient completes the Flowable confirmation task. */
+  handoverRequests: Array<{
+    id: string
+    applicantIamUserId: string
+    targetIamUserId: string
+    reason: string
+    status: 'PENDING_CONFIRMATION' | 'ACCEPTED' | 'REJECTED' | 'STALE'
+    processDefinitionId: string
+    processDefinitionVersion: number
+    createdAt: string
+    decidedAt?: string
+    decisionReason?: string
+  }>
+  /** A co-handler is only added after the target completes its assigned Flowable confirmation task. */
+  coHandlerRequests: Array<{
+    id: string
+    applicantIamUserId: string
+    targetIamUserId: string
+    reason: string
+    status: 'PENDING_CONFIRMATION' | 'ACCEPTED' | 'REJECTED' | 'STALE'
+    processDefinitionId: string
+    processDefinitionVersion: number
+    createdAt: string
+    decidedAt?: string
+    decisionReason?: string
+  }>
+  /** High-risk state changes have their own Flowable approval aggregate. */
+  lifecycleApprovalRequests: Array<{
+    id: string
+    action: 'HOLD' | 'ESCALATE' | 'CANCEL' | 'REOPEN' | 'ASSIGN' | 'ACCEPT' | 'RESOLVE' | 'CLOSE'
+    applicantIamUserId: string
+    reason: string
+    /** Present only for ASSIGN and frozen by the server before the approval task exists. */
+    targetIamUserId?: string
+    sourceTicketVersion: number
+    sourceWorkflowVersion: number
+    processKey: string
+    processDefinitionId: string
+    processVersion: number
+    status: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'EXECUTED' | 'STALE'
+    approverIamUserId?: string
+    decisionReason?: string
+    decidedAt?: string
+    executedAt?: string
+    createdAt: string
+  }>
+  assignmentSnapshots?: Array<{ nodeKey: string; mode: 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS'; candidateRoles: string[]; policyVersion: number; selectedIamUserId?: string; capturedAt: string }>
   /** Returned only to service managers/platform administrators. Never inferred by the browser. */
   controlledJumpActions: Array<{
     requestId: string
@@ -180,7 +238,8 @@ export interface ControlledJumpPreflight {
 
 /** A manager's worklist row is sourced from a live Flowable candidate task and an authorized ticket projection. */
 export interface ApprovalTaskInboxItem {
-  approvalRequestId: string
+  taskType: 'CONTROLLED_JUMP' | 'LIFECYCLE_ACTION' | 'HANDOVER_CONFIRMATION' | 'COHANDLER_CONFIRMATION'
+  requestId: string
   ticketId: string
   ticketTitle: string
   ticketType: TicketType
@@ -188,18 +247,10 @@ export interface ApprovalTaskInboxItem {
   ticketPriority: TicketPriority
   serviceCatalogItem: ServiceCatalogSummary
   requester: IdentitySnapshot
-  applicantIamUserId: string
-  sourceNode: string
-  targetNode: string
-  reason: string
+  actionCode: string
+  summary: string
   requestedAt: string
   engineTaskCreatedAt: string
-  /** Approval policy snapshot summary. Candidate identities remain server-side evidence and are not returned here. */
-  decisionMode: 'ANY_ONE' | 'ALL_OF' | 'UNRECORDED'
-  candidateApprovalCount: number
-  requiredApprovalCount: number
-  canDecide: boolean
-  disabledReason?: string
 }
 
 export interface ApprovalTaskInbox {
@@ -311,11 +362,21 @@ export interface TicketPage {
   page: number
   pageSize: number
   total: number
+  /** Opaque server cursor bound to the current identity, filters, sort and snapshot. */
+  nextCursor?: string
+  /** Prefer this server decision over deriving continuation from item counts. */
+  hasMore?: boolean
+  /** Server-side query snapshot time used to explain stable pagination to the operator. */
+  snapshotAt?: string
 }
 
 export interface TicketCreateRequest {
   serviceCatalogItemId: string
   serviceCatalogFormVersion: number
+  /** Server-authorized service-system registry selection; never inferred from free text. */
+  serviceSystemCode?: string
+  /** Optional module within the selected service system. */
+  serviceSystemModuleCode?: string
   type: TicketType
   title: string
   description: string
@@ -328,10 +389,16 @@ export interface TicketCreateRequest {
 export interface TicketQuery {
   page?: number
   pageSize?: number
+  cursor?: string
   status?: TicketStatus
   type?: TicketType
+  priority?: TicketPriority
   q?: string
   queue?: TicketQueue
+  serviceCatalog?: string
+  requesterOrganization?: string
+  createdFrom?: string
+  createdTo?: string
 }
 
 export interface TicketResult<T> {
@@ -353,6 +420,7 @@ export interface TicketActionResult {
   decision: { outcome: 'COMPLETED' | 'PENDING_APPROVAL' | 'PENDING_PROCESS_TASK'; workflowInstanceId: string; currentNodeCode: string; auditEventId: string }
   slaImpact: { calculatedByServer: true; impact: 'NONE' | 'PAUSED' | 'RESUMED' | 'RECALCULATED' | 'BREACH_RISK'; targetAt?: string }
 }
+export interface NextHandlerCandidate { iamUserId: string; displayName: string; organizationName: string }
 
 export interface TicketWorkActionResult extends Omit<TicketActionResult, 'slaImpact'> {
   participants: TicketParticipant[]
@@ -382,6 +450,10 @@ function newIdempotencyKey(): string {
 const canUseDemoFallback = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE !== 'false'
 
 export const ticketApi = {
+  async getTicketLifecyclePreview(): Promise<TicketLifecyclePreview> {
+    return apiRequest<TicketLifecyclePreview>('/workflow/ticket-lifecycle/preview')
+  },
+
   async list(query: TicketQuery = {}): Promise<TicketResult<TicketPage>> {
     try {
       return { data: await apiRequest<TicketPage>(`/tickets${createQuery(query)}`), source: 'api' }
@@ -400,20 +472,16 @@ export const ticketApi = {
     }
   },
 
-  async create(request: TicketCreateRequest): Promise<TicketResult<Ticket>> {
-    try {
+  async create(request: TicketCreateRequest, idempotencyKey = newIdempotencyKey()): Promise<TicketResult<Ticket>> {
       return {
         data: await apiRequest<Ticket>('/tickets', {
           method: 'POST',
-          headers: { 'Idempotency-Key': newIdempotencyKey() },
+          headers: { 'Idempotency-Key': idempotencyKey },
           body: request,
         }),
         source: 'api',
       }
-    } catch (error) {
-      if (!canUseDemoFallback || !isConnectionFailure(error)) throw error
-      return { data: demoTicketRepository.create(request), source: 'demo' }
-    }
+    // A failed mutation may already have committed. Never turn it into a demo success.
   },
 
   async uploadAttachment(ticketId: string, file: File): Promise<TicketAttachmentUploadWire> {
@@ -429,15 +497,18 @@ export const ticketApi = {
   },
 
   async executeAction(ticketId: string, request: TicketActionRequest): Promise<TicketActionResult> {
+    // version is an HTTP optimistic-lock precondition, not a WorkflowActionRequest field. Sending
+    // it in JSON violates the backend's fail-closed unknown-field policy and yields INVALID_REQUEST.
+    const { version, ...command } = request
     const ticket = await apiRequest<Ticket>(`/tickets/${encodeURIComponent(ticketId)}/workflow/actions`, {
       method: 'POST',
       // If-Match is an HTTP entity-tag. Real servlet containers reject an unquoted number.
-      headers: { 'If-Match': `"${request.version}"`, 'Idempotency-Key': newIdempotencyKey() },
-      body: request,
+      headers: { 'If-Match': `"${version}"`, 'Idempotency-Key': newIdempotencyKey() },
+      body: command,
     })
     return {
       ticket,
-      decision: { outcome: request.action === 'CONTROLLED_JUMP_REQUEST' ? 'PENDING_APPROVAL' : 'COMPLETED', workflowInstanceId: 'server-managed', currentNodeCode: ticket.status, auditEventId: 'server-managed' },
+      decision: { outcome: workflowOutcome(request.action), workflowInstanceId: 'server-managed', currentNodeCode: ticket.status, auditEventId: 'server-managed' },
       slaImpact: { calculatedByServer: true, impact: 'RECALCULATED' },
     }
   },
@@ -445,6 +516,7 @@ export const ticketApi = {
   async getWorkflowOverview(ticketId: string): Promise<WorkflowOverviewWire> {
     return apiRequest<WorkflowOverviewWire>(`/tickets/${encodeURIComponent(ticketId)}/workflow`)
   },
+  async getNextHandlerCandidates(ticketId: string): Promise<NextHandlerCandidate[]> { return apiRequest<NextHandlerCandidate[]>(`/tickets/${encodeURIComponent(ticketId)}/workflow/next-handler-candidates?targetNode=processing`) },
 
   async preflightControlledJump(ticketId: string, requestId: string): Promise<ControlledJumpPreflight> {
     return apiRequest<ControlledJumpPreflight>(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/preflight`)
@@ -463,6 +535,24 @@ export const ticketApi = {
 
   async decideControlledJump(ticketId: string, requestId: string, decision: 'APPROVED' | 'REJECTED', reason: string): Promise<void> {
     await apiRequest(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/decisions`, {
+      method: 'POST', body: { decision, reason },
+    })
+  },
+
+  async decideHandover(ticketId: string, requestId: string, decision: 'ACCEPTED' | 'REJECTED', reason: string): Promise<void> {
+    await apiRequest(`/tickets/${encodeURIComponent(ticketId)}/workflow/handover-requests/${encodeURIComponent(requestId)}/decisions`, {
+      method: 'POST', body: { decision, reason },
+    })
+  },
+
+  async decideCoHandler(ticketId: string, requestId: string, decision: 'ACCEPTED' | 'REJECTED', reason: string): Promise<void> {
+    await apiRequest(`/tickets/${encodeURIComponent(ticketId)}/workflow/cohandler-requests/${encodeURIComponent(requestId)}/decisions`, {
+      method: 'POST', body: { decision, reason },
+    })
+  },
+
+  async decideLifecycleActionApproval(ticketId: string, requestId: string, decision: 'APPROVED' | 'REJECTED', reason: string): Promise<void> {
+    await apiRequest(`/tickets/${encodeURIComponent(ticketId)}/workflow/lifecycle-approval-requests/${encodeURIComponent(requestId)}/decisions`, {
       method: 'POST', body: { decision, reason },
     })
   },

@@ -3,8 +3,10 @@ package cn.servicehub;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -12,6 +14,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import cn.servicehub.access.domain.BackofficeAccess;
+import cn.servicehub.access.domain.BackofficeAccessRepository;
+import cn.servicehub.access.domain.BackofficeDataScope;
+import cn.servicehub.security.VerifiedIamAuthenticationFactory;
+import cn.servicehub.ticket.domain.IdentitySnapshot;
+import cn.servicehub.workflow.domain.TicketWorkflowRepository;
+import cn.servicehub.workflow.routing.NodeAssignmentResolver;
+import java.time.Instant;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -42,6 +53,18 @@ class TicketControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private VerifiedIamAuthenticationFactory verifiedIam;
+
+    @Autowired
+    private BackofficeAccessRepository backofficeAccess;
+
+    @Autowired
+    private TicketWorkflowRepository workflows;
+
+    @Autowired
+    private NodeAssignmentResolver nodeAssignments;
 
     @Test
     void createUsesAuthenticatedIdentityAndServerRules() throws Exception {
@@ -105,8 +128,8 @@ class TicketControllerTest {
 
         mockMvc.perform(get("/api/v1/tickets/{ticketId}", responseId(owned))
                 .with(user("iam-u-1002").roles("REQUESTER")))
-            .andExpect(status().isForbidden())
-            .andExpect(jsonPath("$.code", is("FORBIDDEN")));
+            .andExpect(status().isNotFound())
+            .andExpect(jsonPath("$.code", is("NOT_FOUND")));
     }
 
     @Test
@@ -150,7 +173,136 @@ class TicketControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.length()", is(1)));
         mockMvc.perform(get("/api/v1/tickets/{ticketId}/relations", sourceId).with(user("iam-u-1002").roles("REQUESTER")))
-            .andExpect(status().isForbidden());
+            .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void requesterCannotModifyOrRelateTicketsTheyDoNotOwn() throws Exception {
+        String ownedId = responseId(mockMvc.perform(create("c6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        String foreignId = responseId(mockMvc.perform(create("d6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST.replace("页面卡顿", "他人工单"), "iam-u-1002"))
+            .andExpect(status().isCreated()).andReturn());
+
+        mockMvc.perform(patch("/api/v1/tickets/{ticketId}/description", foreignId)
+                .with(user("iam-u-1001").roles("REQUESTER")).with(csrf()).header("If-Match", "\"0\"")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"description\":\"尝试篡改\",\"descriptionFormat\":\"PLAIN_TEXT\"}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code", is("FORBIDDEN")));
+        mockMvc.perform(post("/api/v1/tickets/{ticketId}/relations", ownedId).with(user("iam-u-1001").roles("REQUESTER")).with(csrf())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"targetTicketId\":\"" + foreignId + "\",\"relationType\":\"RELATED\"}"))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code", is("FORBIDDEN")));
+    }
+
+    @Test
+    void verifiedSupportScopeRejectsCrossOrganizationAndIntersectsScopeTypes() throws Exception {
+        String itTicket = responseId(mockMvc.perform(create("e6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        mockMvc.perform(create("f6d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST.replace("页面卡顿", "财务网络异常"), "iam-u-1002"))
+            .andExpect(status().isCreated());
+
+        var financeSupport = verifiedIam.create("iam-u-1002", "TEST_OIDC");
+        mockMvc.perform(get("/api/v1/tickets").with(authentication(financeSupport)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(1)))
+            .andExpect(jsonPath("$.items[0].requester.iamUserId", is("iam-u-1002")));
+        mockMvc.perform(get("/api/v1/tickets/{id}", itTicket).with(authentication(financeSupport)))
+            .andExpect(status().isNotFound());
+
+        BackofficeAccess current = backofficeAccess.findByIamUserId("iam-u-local-service-manager").orElseThrow();
+        Set<BackofficeDataScope> organizationsAndWrongCatalog = Set.of(
+            new BackofficeDataScope("ORGANIZATION", "org-it"), new BackofficeDataScope("ORGANIZATION", "org-finance"),
+            new BackofficeDataScope("SERVICE_CATALOG", "SC-not-matching"));
+        backofficeAccess.save(new BackofficeAccess(current.iamUserId(), true, current.roleCodes(), organizationsAndWrongCatalog,
+            current.version() + 1, Instant.now()), current.version(), "test-admin");
+        mockMvc.perform(get("/api/v1/tickets").with(authentication(verifiedIam.create(current.iamUserId(), "TEST_OIDC"))))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(0)));
+
+        BackofficeAccess changed = backofficeAccess.findByIamUserId(current.iamUserId()).orElseThrow();
+        Set<BackofficeDataScope> matchingIntersection = Set.of(
+            new BackofficeDataScope("ORGANIZATION", "org-it"), new BackofficeDataScope("ORGANIZATION", "org-finance"),
+            new BackofficeDataScope("SERVICE", "SC-browser-performance"));
+        backofficeAccess.save(new BackofficeAccess(changed.iamUserId(), true, changed.roleCodes(), matchingIntersection,
+            changed.version() + 1, Instant.now()), changed.version(), "test-admin");
+        mockMvc.perform(get("/api/v1/tickets").with(authentication(verifiedIam.create(changed.iamUserId(), "TEST_OIDC"))))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(2)));
+    }
+
+    @Test
+    void cursorRejectsTamperingSubjectAndFilterChangesAndPagesStably() throws Exception {
+        for (int i = 0; i < 3; i++) {
+            mockMvc.perform(create("a7d3c2b1-1234-4ab" + i + "-8def-123456789012", CREATE_REQUEST.replace("页面卡顿", "分页工单" + i), "iam-u-1001"))
+                .andExpect(status().isCreated());
+        }
+        MvcResult first = mockMvc.perform(get("/api/v1/tickets?pageSize=1").with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.hasMore", is(true))).andExpect(jsonPath("$.total", is(3))).andReturn();
+        JsonNode firstJson = objectMapper.readTree(first.getResponse().getContentAsByteArray());
+        String firstId = firstJson.required("items").get(0).required("id").asText();
+        String cursor = firstJson.required("nextCursor").asText();
+
+        String newId = responseId(mockMvc.perform(create("b7d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST.replace("页面卡顿", "游标后新工单"), "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        MvcResult second = mockMvc.perform(get("/api/v1/tickets?pageSize=1&cursor={cursor}", cursor).with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.page", is(2))).andExpect(jsonPath("$.total", is(3))).andReturn();
+        String secondId = objectMapper.readTree(second.getResponse().getContentAsByteArray()).required("items").get(0).required("id").asText();
+        org.junit.jupiter.api.Assertions.assertNotEquals(firstId, secondId);
+        org.junit.jupiter.api.Assertions.assertNotEquals(newId, secondId);
+
+        char replacement = cursor.charAt(cursor.length() - 1) == 'A' ? 'B' : 'A';
+        String tampered = cursor.substring(0, cursor.length() - 1) + replacement;
+        mockMvc.perform(get("/api/v1/tickets?pageSize=1&cursor={cursor}", tampered).with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/tickets?pageSize=1&cursor={cursor}", cursor).with(user("iam-u-1002").roles("REQUESTER")))
+            .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/tickets?pageSize=1&q=changed&cursor={cursor}", cursor).with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void participantWithSupportRoleButNoCurrentScopeCannotReadListDetailOrAttachment() throws Exception {
+        String ticketId = responseId(mockMvc.perform(create("c7d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        workflows.addCoHandlerParticipant(ticketId, new IdentitySnapshot("iam-u-local-requester", "本地提单人",
+            "ORG-LOCAL-IT", "本地组织", "用户", Instant.now()), Instant.now());
+        backofficeAccess.save(new BackofficeAccess("iam-u-local-requester", true, Set.of("ROLE_FIRST_LINE_SUPPORT"), Set.of(),
+            1, Instant.now()), 0, "test-admin");
+
+        var participant = verifiedIam.create("iam-u-local-requester", "TEST_OIDC");
+        mockMvc.perform(get("/api/v1/tickets").with(authentication(participant)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(0)));
+        mockMvc.perform(get("/api/v1/tickets/{id}", ticketId).with(authentication(participant)))
+            .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/v1/tickets/{id}/attachments/ATT-00000000-0000-4000-8000-000000000001/download", ticketId)
+                .with(authentication(participant)))
+            .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void routingCandidatesExcludeSupportUsersOutsideTicketScope() throws Exception {
+        String ticketId = responseId(mockMvc.perform(create("d7d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        org.junit.jupiter.api.Assertions.assertTrue(nodeAssignments.candidates(ticketId, "SC-browser-performance", "accept", "iam-u-1001").isEmpty());
+
+        BackofficeAccess current = backofficeAccess.findByIamUserId("iam-u-1002").orElseThrow();
+        Set<BackofficeDataScope> matching = Set.of(new BackofficeDataScope("ORGANIZATION", "org-it"),
+            new BackofficeDataScope("SERVICE_CATALOG", "SC-browser-performance"));
+        backofficeAccess.save(new BackofficeAccess(current.iamUserId(), true, current.roleCodes(), matching,
+            current.version() + 1, Instant.now()), current.version(), "test-admin");
+        org.junit.jupiter.api.Assertions.assertEquals(Set.of("iam-u-1002"), nodeAssignments.candidates(ticketId,
+            "SC-browser-performance", "accept", "iam-u-1001").stream().map(NodeAssignmentResolver.HandlerCandidate::iamUserId).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test
+    void catalogOrganizationNamesAndInclusiveUtcDatesAreServerFilteredWhileWildcardsStayLiteral() throws Exception {
+        mockMvc.perform(create("e7d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated());
+        String today = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString();
+        mockMvc.perform(get("/api/v1/tickets").param("serviceCatalog", "浏览器性能")
+                .param("requesterOrganization", "信息技术").param("createdFrom", today).param("createdTo", today)
+                .with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(1)));
+        mockMvc.perform(get("/api/v1/tickets").param("serviceCatalog", "%")
+                .with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.total", is(0)));
     }
 
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder create(String key, String body, String userId) {

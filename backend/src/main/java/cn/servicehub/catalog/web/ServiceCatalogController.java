@@ -53,13 +53,13 @@ public class ServiceCatalogController {
     /** Legacy compact representation retained for early prototype callers. */
     @GetMapping("/items/{id}")
     ServiceCatalogItemResponse item(@PathVariable @Pattern(regexp = "^[A-Za-z0-9][A-Za-z0-9_-]*$") String id) {
-        return ServiceCatalogItemResponse.from(service.getPublishedItem(id));
+        return ServiceCatalogItemResponse.from(service.getRequesterItem(id));
     }
 
     @GetMapping("/items/{serviceCatalogItemId}/form")
     ServiceCatalogPageResponse.Form form(@PathVariable @Pattern(regexp = "^SC-[A-Za-z0-9_-]{3,60}$") String serviceCatalogItemId) {
-        var item = service.getPublishedForm(serviceCatalogItemId, service.currentFormVersion());
-        return ServiceCatalogPageResponse.form(item, service, service.standardTags());
+        var form = service.getRequesterForm(serviceCatalogItemId);
+        return ServiceCatalogPageResponse.form(form, service, service.standardTags());
     }
 
     @GetMapping("/dictionaries/{code}")

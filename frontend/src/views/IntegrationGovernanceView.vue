@@ -6,6 +6,7 @@ import {
   integrationsApi,
   type ConfigurationItemSummary,
   type AlertIdempotencyStatus,
+  type AlertRecommendation,
   type ExternalAlertStatus,
   type IntegrationHealthStatus,
   type IntegrationOverview,
@@ -28,6 +29,7 @@ const systemLabels: Record<IntegrationSystemType, string> = { CMDB: 'CMDB', MONI
 const healthLabels: Record<IntegrationHealthStatus, string> = { HEALTHY: '正常', DEGRADED: '降级', UNAVAILABLE: '不可用', DISABLED: '已禁用', NOT_CONFIGURED: '未配置', NOT_CHECKED: '待检测', CONFIGURATION_PENDING: '配置待发布', UNKNOWN: '未知' }
 const alertStatusLabels: Record<ExternalAlertStatus, string> = { RECEIVED: '已接收', PROCESSING: '处理中', TICKET_CREATED: '已关联工单', DEDUPLICATED: '已去重关联', SUPPRESSED: '已抑制', RETRY_SCHEDULED: '待重试', REJECTED: '已拒绝', RECOVERED: '已恢复', FAILED: '处理失败', UNKNOWN: '状态未知' }
 const idempotencyLabels: Record<AlertIdempotencyStatus, string> = { CREATED: '首次接收', DEDUPLICATED: '重复去重', SUPPRESSED: '策略抑制', RETRY_SCHEDULED: '待重试', UNKNOWN: '未返回' }
+const recommendationLabels: Record<AlertRecommendation, string> = { REVIEW_INCIDENT_CREATION: '建议人工复核后建事件单', TICKET_ALREADY_LINKED: '已关联工单', MANUAL_TRIAGE: '建议人工研判' }
 const trustedTicketId = /^[A-Z][A-Z0-9_-]{1,63}$/
 
 const configuredConnectionCount = computed(() => overview.value?.connectionHealths.filter((item) => item.enabled).length ?? 0)
@@ -126,7 +128,7 @@ onMounted(load)
     <section class="panel integration-scope-panel"><div><b>当前数据范围</b><span>{{ scopeLabel }}</span></div><small>组织、服务、队列与 CI 可见范围由服务端逐请求校验；前端不能切换或扩大范围。</small></section>
 
     <section class="panel table-panel integration-section"><div class="panel-header"><div><h3>外部告警关联</h3><p>仅展示已归一化的来源、级别、接收幂等结果和关联工单，不展示原始告警正文。</p></div><span class="readonly-badge">服务端归一化</span></div>
-      <div v-if="overview.recentAlerts.length" class="table-scroll"><table><thead><tr><th>告警摘要</th><th>来源</th><th>级别</th><th>CI</th><th>接收幂等结果</th><th>处理状态</th><th>关联工单</th><th>发生时间</th></tr></thead><tbody><tr v-for="alert in overview.recentAlerts" :key="alert.alertId"><td><b class="mono-text">{{ alert.alertId }}</b></td><td>{{ alert.sourceCode }}</td><td><span class="tag" :class="alert.severity === 'CRITICAL' ? 'tag--red' : alert.severity === 'WARNING' ? 'tag--orange' : 'tag--blue'">{{ alert.severity === 'CRITICAL' ? '严重' : alert.severity === 'WARNING' ? '告警' : '提示' }}</span></td><td><span v-if="alert.configurationItemName">{{ alert.configurationItemName }}</span><span v-else class="table-subtext">未返回 CI</span></td><td><span v-if="alert.idempotencyStatus" class="integration-alert-status" :class="alertClass(alert.idempotencyStatus)">{{ idempotencyLabels[alert.idempotencyStatus] }}</span><span v-else class="table-subtext">服务端暂未返回</span></td><td><span class="integration-alert-status" :class="alertClass(alert.status)">{{ alertStatusLabels[alert.status] }}</span></td><td><RouterLink v-if="safeTicket(alert.ticketId)" class="ticket-id" :to="`/tickets/${alert.ticketId}`">{{ alert.ticketId }}</RouterLink><span v-else class="table-subtext">未关联 / 无权查看</span></td><td>{{ formatTime(alert.occurredAt) }}</td></tr></tbody></table></div>
+      <div v-if="overview.recentAlerts.length" class="table-scroll"><table><thead><tr><th>告警摘要</th><th>来源</th><th>级别</th><th>CI</th><th>接收幂等结果</th><th>处置建议</th><th>处理状态</th><th>关联工单</th><th>发生时间</th></tr></thead><tbody><tr v-for="alert in overview.recentAlerts" :key="alert.alertId"><td><b class="mono-text">{{ alert.alertId }}</b></td><td>{{ alert.sourceCode }}</td><td><span class="tag" :class="alert.severity === 'CRITICAL' ? 'tag--red' : ['HIGH', 'MEDIUM'].includes(alert.severity) ? 'tag--orange' : 'tag--blue'">{{ alert.severity === 'CRITICAL' ? '严重' : alert.severity === 'HIGH' ? '高' : alert.severity === 'MEDIUM' ? '中' : alert.severity === 'LOW' ? '低' : '提示' }}</span></td><td><span v-if="alert.configurationItemName">{{ alert.configurationItemName }}</span><span v-else class="table-subtext">未返回 CI</span></td><td><span v-if="alert.idempotencyStatus" class="integration-alert-status" :class="alertClass(alert.idempotencyStatus)">{{ idempotencyLabels[alert.idempotencyStatus] }}</span><span v-else class="table-subtext">服务端暂未返回</span></td><td><span class="table-subtext">{{ recommendationLabels[alert.recommendation] }}</span></td><td><span class="integration-alert-status" :class="alertClass(alert.status)">{{ alertStatusLabels[alert.status] }}</span></td><td><RouterLink v-if="safeTicket(alert.ticketId)" class="ticket-id" :to="`/tickets/${alert.ticketId}`">{{ alert.ticketId }}</RouterLink><span v-else class="table-subtext">未关联 / 无权查看</span></td><td>{{ formatTime(alert.occurredAt) }}</td></tr></tbody></table></div>
       <div v-else class="compact-empty"><div class="empty-icon">◌</div><h3>暂无可见外部告警</h3><p>未配置来源、没有命中当前权限范围，或告警已被服务端策略抑制时，不以空白记录替代。</p></div>
     </section>
 

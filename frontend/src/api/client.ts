@@ -32,7 +32,7 @@ function getCsrfToken(): string | undefined {
 async function ensureCsrfToken(): Promise<void> {
   if (getCsrfToken()) return
   if (!csrfInitialization) {
-    csrfInitialization = fetch(`${API_BASE_URL}/csrf`, { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+    csrfInitialization = fetch(`${API_BASE_URL}/csrf`, { headers: { Accept: 'application/json' }, credentials: 'include' })
       .then(async (response) => {
         if (!response.ok) {
           const payload = await response.json().catch(() => undefined) as { message?: string; code?: string } | undefined
@@ -64,7 +64,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     ...options,
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    credentials: 'same-origin',
+    // The development SPA and backend intentionally use separate loopback ports. CORS remains
+    // exact-origin allow-listed server-side; include is required to carry the IAM session cookie.
+    credentials: 'include',
   })
 
   if (!response.ok) {
@@ -82,7 +84,7 @@ export async function apiUpload<T>(path: string, body: FormData): Promise<T> {
   const headers = new Headers({ Accept: 'application/json' })
   const csrfToken = getCsrfToken()
   if (csrfToken) headers.set('X-CSRF-TOKEN', decodeURIComponent(csrfToken))
-  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers, body, credentials: 'same-origin' })
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'POST', headers, body, credentials: 'include' })
   if (!response.ok) {
     const payload = await response.json().catch(() => undefined) as { message?: string; code?: string } | undefined
     throw new ApiError(payload?.message ?? `上传失败（${response.status}）`, response.status, payload?.code)

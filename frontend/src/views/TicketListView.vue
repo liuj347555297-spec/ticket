@@ -2,15 +2,32 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ApiError } from '@/api/client'
-import { ticketApi, type Ticket, type TicketQueue, type TicketStatus, type TicketType } from '@/api/tickets'
+import { ticketApi, type Ticket, type TicketPriority, type TicketQuery, type TicketQueue, type TicketStatus, type TicketType } from '@/api/tickets'
+
+interface TicketListFilters {
+  q: string
+  status: '' | TicketStatus
+  type: '' | TicketType
+  priority: '' | TicketPriority
+  serviceCatalog: string
+  requesterOrganization: string
+  createdFrom: string
+  createdTo: string
+  queue: TicketQueue
+}
 
 const tickets = ref<Ticket[]>([])
 const total = ref(0)
-const loading = ref(true)
+const loading = ref(false)
 const errorMessage = ref('')
 const source = ref<'api' | 'demo'>('api')
-const filters = ref<{ q: string; status: '' | TicketStatus; type: '' | TicketType; queue: TicketQueue }>({ q: '', status: '', type: '', queue: 'MY_TODO' })
-const localFilters = ref({ priority: '', catalog: '', organization: '', startDate: '', endDate: '' })
+const filters = ref<TicketListFilters>({ q: '', status: '', type: '', priority: '', serviceCatalog: '', requesterOrganization: '', createdFrom: '', createdTo: '', queue: 'MY_TODO' })
+const pageSize = ref<20 | 50 | 100>(20)
+const currentCursor = ref<string>()
+const nextCursor = ref<string>()
+const hasMore = ref(false)
+const snapshotAt = ref<string>()
+const cursorHistory = ref<Array<string | undefined>>([])
 const showColumnSettings = ref(false)
 const exportNotice = ref('')
 const visibleColumns = ref<Record<string, boolean>>({ service: true, priority: true, status: true, updated: true })
@@ -31,42 +48,108 @@ const queues: Array<{ code: TicketQueue; label: string }> = [
   { code: 'TO_READ', label: '我的待阅' }, { code: 'ALL', label: '所有可见工单' },
 ]
 const queueName = computed(() => queues.find((item) => item.code === filters.value.queue)?.label ?? '工单')
-const visibleTickets = computed(() => tickets.value.filter((ticket) => {
-  const createdAt = ticket.createdAt.slice(0, 10)
-  const catalog = `${ticket.serviceCatalogItem.name} ${ticket.type}`.toLowerCase()
-  const organization = ticket.requester.organizationName.toLowerCase()
-  return (!localFilters.value.priority || ticket.priority === localFilters.value.priority)
-    && (!localFilters.value.catalog || catalog.includes(localFilters.value.catalog.trim().toLowerCase()))
-    && (!localFilters.value.organization || organization.includes(localFilters.value.organization.trim().toLowerCase()))
-    && (!localFilters.value.startDate || createdAt >= localFilters.value.startDate)
-    && (!localFilters.value.endDate || createdAt <= localFilters.value.endDate)
-}))
+const currentPage = computed(() => cursorHistory.value.length + 1)
+const canGoPrevious = computed(() => cursorHistory.value.length > 0 && !loading.value)
+const canGoNext = computed(() => hasMore.value && Boolean(nextCursor.value) && !loading.value)
 
 function formatTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(value))
 }
 
-async function loadTickets(): Promise<void> {
+function queryForCurrentPage(): TicketQuery {
+  return {
+    page: currentPage.value,
+    pageSize: pageSize.value,
+    cursor: currentCursor.value,
+    q: filters.value.q.trim() || undefined,
+    status: filters.value.status || undefined,
+    type: filters.value.type || undefined,
+    priority: filters.value.priority || undefined,
+    queue: filters.value.queue,
+    serviceCatalog: filters.value.serviceCatalog.trim() || undefined,
+    requesterOrganization: filters.value.requesterOrganization.trim() || undefined,
+    createdFrom: filters.value.createdFrom || undefined,
+    createdTo: filters.value.createdTo || undefined,
+  }
+}
+
+async function loadTickets(): Promise<boolean> {
+  if (loading.value) return false
+  if (filters.value.createdFrom && filters.value.createdTo && filters.value.createdFrom > filters.value.createdTo) {
+    errorMessage.value = '发起日期的开始时间不能晚于结束时间。'
+    return false
+  }
   loading.value = true
   errorMessage.value = ''
   try {
-    const result = await ticketApi.list({ page: 1, pageSize: 20, q: filters.value.q.trim() || undefined, status: filters.value.status || undefined, type: filters.value.type || undefined, queue: filters.value.queue })
+    const result = await ticketApi.list(queryForCurrentPage())
     tickets.value = result.data.items
     total.value = result.data.total
+    nextCursor.value = result.data.nextCursor
+    hasMore.value = result.data.hasMore ?? Boolean(result.data.nextCursor)
+    snapshotAt.value = result.data.snapshotAt
     source.value = result.source
+    return true
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '无法加载工单，请稍后重试。'
-    tickets.value = []
-    total.value = 0
+    return false
   } finally {
     loading.value = false
   }
 }
 
-function resetFilters(): void {
-  filters.value = { q: '', status: '', type: '', queue: filters.value.queue }
-  localFilters.value = { priority: '', catalog: '', organization: '', startDate: '', endDate: '' }
+function resetPagination(clearRows = true): void {
+  currentCursor.value = undefined
+  nextCursor.value = undefined
+  hasMore.value = false
+  snapshotAt.value = undefined
+  cursorHistory.value = []
+  if (clearRows) {
+    tickets.value = []
+    total.value = 0
+  }
+}
+function applyFilters(): void {
+  if (loading.value) return
+  resetPagination()
   void loadTickets()
+}
+function resetFilters(): void {
+  if (loading.value) return
+  filters.value = { q: '', status: '', type: '', priority: '', serviceCatalog: '', requesterOrganization: '', createdFrom: '', createdTo: '', queue: filters.value.queue }
+  applyFilters()
+}
+function selectQueue(queue: TicketQueue): void {
+  if (loading.value || filters.value.queue === queue) return
+  filters.value.queue = queue
+  resetPagination()
+  void loadTickets()
+}
+function changePageSize(): void {
+  if (loading.value) return
+  resetPagination()
+  void loadTickets()
+}
+async function goNext(): Promise<void> {
+  if (!canGoNext.value || !nextCursor.value) return
+  const previousCursor = currentCursor.value
+  const targetCursor = nextCursor.value
+  cursorHistory.value.push(previousCursor)
+  currentCursor.value = targetCursor
+  if (!await loadTickets()) {
+    currentCursor.value = previousCursor
+    cursorHistory.value.pop()
+  }
+}
+async function goPrevious(): Promise<void> {
+  if (!canGoPrevious.value) return
+  const previousCursor = currentCursor.value
+  const targetCursor = cursorHistory.value.pop()
+  currentCursor.value = targetCursor
+  if (!await loadTickets()) {
+    currentCursor.value = previousCursor
+    cursorHistory.value.push(targetCursor)
+  }
 }
 function toggleColumn(key: string): void {
   visibleColumns.value[key] = !visibleColumns.value[key]
@@ -93,23 +176,23 @@ onMounted(() => {
 
   <section class="panel ticket-filter-panel">
     <nav class="ticket-queue-tabs" aria-label="我的流程队列">
-      <button v-for="queue in queues" :key="queue.code" type="button" :class="{ 'is-active': filters.queue === queue.code }" @click="filters.queue = queue.code; loadTickets()">{{ queue.label }}</button>
+      <button v-for="queue in queues" :key="queue.code" type="button" :class="{ 'is-active': filters.queue === queue.code }" :disabled="loading" @click="selectQueue(queue.code)">{{ queue.label }}</button>
     </nav>
-    <form class="ticket-filter" @submit.prevent="loadTickets">
+    <form class="ticket-filter" @submit.prevent="applyFilters">
       <label class="field field--grow"><span>关键词</span><input v-model="filters.q" maxlength="100" placeholder="编号、主题、服务或标签" /></label>
       <label class="field"><span>当前状态</span><select v-model="filters.status"><option value="">全部状态</option><option v-for="[value, label] in statusOptions" :key="value" :value="value">{{ label }}</option></select></label>
       <label class="field"><span>工单类型</span><select v-model="filters.type"><option value="">全部类型</option><option v-for="[value, label] in typeOptions" :key="value" :value="value">{{ label }}</option></select></label>
-      <label class="field"><span>优先级（当前页）</span><select v-model="localFilters.priority"><option value="">全部优先级</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option></select></label>
-      <label class="field"><span>服务目录（当前页）</span><input v-model.trim="localFilters.catalog" maxlength="100" placeholder="例如 页面卡顿" /></label>
-      <label class="field"><span>申请部门（当前页）</span><input v-model.trim="localFilters.organization" maxlength="100" placeholder="组织名称" /></label>
-      <label class="field"><span>发起日期（当前页）</span><input v-model="localFilters.startDate" type="date" /></label>
-      <label class="field"><span>至</span><input v-model="localFilters.endDate" type="date" /></label>
+      <label class="field"><span>优先级</span><select v-model="filters.priority"><option value="">全部优先级</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option><option value="P4">P4</option></select></label>
+      <label class="field"><span>服务目录</span><input v-model.trim="filters.serviceCatalog" maxlength="100" placeholder="名称或编码" /></label>
+      <label class="field"><span>申请部门</span><input v-model.trim="filters.requesterOrganization" maxlength="100" placeholder="组织名称或编码" /></label>
+      <label class="field"><span>发起日期</span><input v-model="filters.createdFrom" type="date" /></label>
+      <label class="field"><span>至</span><input v-model="filters.createdTo" type="date" /></label>
       <button class="button button--primary" type="submit" :disabled="loading">查询</button>
-      <button class="button button--secondary" type="button" @click="resetFilters">重置</button>
+      <button class="button button--secondary" type="button" :disabled="loading" @click="resetFilters">重置</button>
       <button class="button button--secondary" type="button" @click="showColumnSettings = !showColumnSettings">列设置</button>
       <button class="button button--secondary" type="button" @click="requestExport">导出</button>
     </form>
-    <p class="ticket-filter-hint">关键词、状态、类型和队列由服务端过滤；标注“当前页”的条件仅在已授权返回的本页数据中精筛，不扩大数据范围。</p>
+    <p class="ticket-filter-hint">全部条件均由服务端在当前 IAM 数据范围内筛选后再分页；切换队列、条件或每页条数会创建新的查询快照。</p>
     <div v-if="showColumnSettings" class="column-setting-menu"><b>显示列（仅保存本机展示偏好）</b><label v-for="(enabled, key) in visibleColumns" :key="key"><input type="checkbox" :checked="enabled" @change="toggleColumn(key)" />{{ ({ service: '服务目录', priority: '优先级', status: '状态', updated: '最后更新' } as Record<string, string>)[key] }}</label></div>
   </section>
 
@@ -118,11 +201,11 @@ onMounted(() => {
   <p v-if="exportNotice" class="form-alert form-alert--error">{{ exportNotice }}</p>
 
   <section class="panel table-panel">
-    <div class="panel-header"><div><h3>{{ queueName }}</h3><p>服务端返回 {{ total }} 条；当前页精筛后显示 {{ visibleTickets.length }} 条。工单详情仍由服务端逐对象授权。</p></div></div>
+    <div class="panel-header"><div><h3>{{ queueName }}</h3><p>第 {{ currentPage }} 页显示 {{ tickets.length }} 条，共 {{ total }} 条；工单详情仍由服务端逐对象授权。</p></div></div>
     <div v-if="loading" class="compact-loading">正在加载工单…</div>
-    <div v-else-if="visibleTickets.length" class="table-scroll">
+    <div v-else-if="tickets.length" class="table-scroll">
       <table><thead><tr><th>编号</th><th>工单主题 / 标签</th><th v-if="visibleColumns.service">服务目录</th><th v-if="visibleColumns.priority">优先级</th><th v-if="visibleColumns.status">状态</th><th v-if="visibleColumns.updated">最后更新</th></tr></thead>
-        <tbody><tr v-for="ticket in visibleTickets" :key="ticket.id">
+        <tbody><tr v-for="ticket in tickets" :key="ticket.id">
           <td><RouterLink class="ticket-id" :to="`/tickets/${ticket.id}`">{{ ticket.id }}</RouterLink></td>
           <td><RouterLink class="ticket-title" :to="`/tickets/${ticket.id}`">{{ ticket.title }}</RouterLink><div class="tag-row"><span v-for="tag in ticket.tags?.slice(0, 3)" :key="tag.name" class="tag tag--muted">{{ tag.name }}</span></div></td>
           <td v-if="visibleColumns.service"><span>{{ typeNames[ticket.type] }}</span><small class="table-subtext">{{ ticket.serviceCatalogItem.name }}</small></td>
@@ -133,5 +216,13 @@ onMounted(() => {
       </table>
     </div>
     <div v-else class="empty-state compact-empty"><span class="empty-icon">⌕</span><h3>没有匹配的工单</h3><p>请调整筛选条件，或发起新的服务请求。</p></div>
+    <footer class="ticket-pagination" aria-label="工单列表分页">
+      <div class="ticket-pagination__summary"><b>第 {{ currentPage }} 页</b><span>当前 {{ tickets.length }} 条 · 共 {{ total }} 条</span><small>查询快照：{{ snapshotAt ? formatTime(snapshotAt) : '服务端未返回' }}</small></div>
+      <div class="ticket-pagination__controls">
+        <label>每页<select v-model.number="pageSize" :disabled="loading" @change="changePageSize"><option :value="20">20</option><option :value="50">50</option><option :value="100">100</option></select></label>
+        <button class="button button--secondary button--compact" type="button" :disabled="!canGoPrevious" @click="goPrevious">上一页</button>
+        <button class="button button--primary button--compact" type="button" :disabled="!canGoNext" @click="goNext">下一页</button>
+      </div>
+    </footer>
   </section>
 </template>

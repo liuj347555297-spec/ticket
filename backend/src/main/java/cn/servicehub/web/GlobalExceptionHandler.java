@@ -2,6 +2,8 @@ package cn.servicehub.web;
 
 import cn.servicehub.iam.application.IamProjectionUnavailableException;
 import cn.servicehub.catalog.application.CatalogValidationException;
+import cn.servicehub.catalog.config.FormConfigurationConflictException;
+import cn.servicehub.catalog.config.FormConfigurationValidationException;
 import cn.servicehub.ticket.application.TicketNotFoundException;
 import cn.servicehub.ticket.domain.IdempotencyConflictException;
 import cn.servicehub.workflow.application.WorkflowConflictException;
@@ -14,6 +16,8 @@ import cn.servicehub.knowledge.application.KnowledgeNotFoundException;
 import cn.servicehub.knowledge.application.KnowledgeValidationException;
 import cn.servicehub.integration.application.IntegrationSecurityException;
 import cn.servicehub.announcement.application.AnnouncementValidationException;
+import cn.servicehub.servicesystem.application.ServiceSystemConflictException;
+import cn.servicehub.servicesystem.application.ServiceSystemValidationException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -52,6 +56,31 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "SERVICE_CATALOG_INVALID", "Service catalog input is invalid", request));
     }
 
+    @ExceptionHandler(FormConfigurationValidationException.class)
+    ResponseEntity<ApiError> formConfigurationValidation(FormConfigurationValidationException ignored, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "FORM_CONFIGURATION_INVALID", "Form configuration is invalid", request));
+    }
+
+    @ExceptionHandler(cn.servicehub.designer.StudioConflictException.class)
+    ResponseEntity<ApiError> studioConflict(cn.servicehub.designer.StudioConflictException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error(HttpStatus.CONFLICT, "DESIGN_STUDIO_CONFLICT", "Design draft changed; reload and compare before saving", request));
+    }
+
+    @ExceptionHandler(FormConfigurationConflictException.class)
+    ResponseEntity<ApiError> formConfigurationConflict(FormConfigurationConflictException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error(HttpStatus.CONFLICT, "FORM_CONFIGURATION_CONFLICT", "Form configuration version conflicts with current state", request));
+    }
+
+    @ExceptionHandler(ServiceSystemValidationException.class)
+    ResponseEntity<ApiError> serviceSystemValidation(ServiceSystemValidationException ignored, HttpServletRequest request) {
+        return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "SERVICE_SYSTEM_INVALID", "Service system input is invalid", request));
+    }
+
+    @ExceptionHandler(ServiceSystemConflictException.class)
+    ResponseEntity<ApiError> serviceSystemConflict(ServiceSystemConflictException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error(HttpStatus.CONFLICT, "SERVICE_SYSTEM_CONFLICT", "Service system version conflicts with current state", request));
+    }
+
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     ResponseEntity<ApiError> methodNotAllowed(HttpRequestMethodNotSupportedException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
@@ -83,7 +112,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler({TicketNotFoundException.class, AttachmentNotFoundException.class, KnowledgeNotFoundException.class})
-    ResponseEntity<ApiError> ticketNotFound(TicketNotFoundException ignored, HttpServletRequest request) {
+    ResponseEntity<ApiError> ticketNotFound(RuntimeException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
     }
@@ -95,6 +124,14 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ApiError> forbidden(AccessDeniedException ignored, HttpServletRequest request) {
+        // Read-side ticket object endpoints deliberately collapse "missing" and "not allowed" so
+        // sequential ticket identifiers cannot be used as an existence oracle. Mutation attempts
+        // remain 403 because callers need an explicit authorization failure and already know the ID.
+        if (("GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod()))
+            && request.getRequestURI().matches("^/api/v1/tickets/TKT-[0-9]{8}-[0-9]{6}(?:/.*)?$")) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
+        }
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
             .body(error(HttpStatus.FORBIDDEN, "FORBIDDEN", "You are not authorized for this operation", request));
     }

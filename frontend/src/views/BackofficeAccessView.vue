@@ -21,7 +21,7 @@ const roleOptions: Array<{ code: BackofficeRole; label: string; note: string }> 
   { code: 'ROLE_PLATFORM_ADMIN', label: '平台管理员', note: '平台级高危管理权限' },
 ]
 const scopeTypes: Array<{ code: BackofficeScopeType; label: string }> = [
-  { code: 'ORGANIZATION', label: '组织' }, { code: 'SERVICE', label: '服务目录' }, { code: 'QUEUE', label: '队列' }, { code: 'CONFIGURATION_ITEM', label: '配置项（CI）' },
+  { code: 'ORGANIZATION', label: '组织' }, { code: 'SERVICE_CATALOG', label: '服务目录' }, { code: 'SERVICE_SYSTEM', label: '服务系统' }, { code: 'SERVICE', label: '服务目录（旧编码）' }, { code: 'CONFIGURATION_ITEM', label: '配置项（CI）' },
 ]
 const form = reactive<{ enabled: boolean; roleCodes: BackofficeRole[]; dataScopes: BackofficeDataScope[]; version: number }>({ enabled: false, roleCodes: [], dataScopes: [], version: 0 })
 const canManage = computed(() => session.authorization?.roles.includes('PLATFORM_ADMIN') ?? false)

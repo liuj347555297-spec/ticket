@@ -24,7 +24,9 @@ public record TicketCreateRequest(
     TicketDescriptionFormat descriptionFormat,
     @NotNull @Size(max = 50) Map<@Pattern(regexp = "^[A-Za-z][A-Za-z0-9_.-]{0,63}$") String, Object> structuredFields,
     @Size(max = 20) List<@Valid TagRequest> tags,
-    @Size(max = 20) List<@NotBlank @Size(max = 128) String> relatedConfigurationItemIds) {
+    @Size(max = 20) List<@NotBlank @Size(max = 128) String> relatedConfigurationItemIds,
+    @Pattern(regexp = "^[A-Z][A-Z0-9_]{2,63}$") String serviceSystemCode,
+    @Pattern(regexp = "^[A-Z][A-Z0-9_]{1,63}$") String serviceSystemModuleCode) {
 
     public record TagRequest(
         @NotBlank @Size(max = 51) @Pattern(regexp = "^#[^\\s#]{1,50}$") String name,

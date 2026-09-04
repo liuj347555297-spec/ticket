@@ -11,9 +11,77 @@
 .related-ticket-row:hover { border-color: #8bb8e8; background: #f4f9ff; }
 .related-ticket-row small { color: #718398; font-size: 11px; }
 
+/* 处理工单工作台：左侧专注处理事实与动作，右侧集中展示协作与时效。 */
+.ticket-detail-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 344px);
+  gap: 12px;
+  align-items: start;
+}
+.ticket-detail-layout > .detail-panel {
+  grid-column: 1;
+  min-width: 0;
+}
+.ticket-detail-layout > .detail-sidebar {
+  display: grid;
+  grid-column: 2;
+  order: -40;
+  gap: 12px;
+  align-self: start;
+  position: sticky;
+  top: 52px;
+  z-index: 2;
+}
+.detail-sidebar .detail-panel { margin: 0; }
+.collaboration-sidebar-panel,
+.process-summary-panel {
+  grid-column: 2 !important;
+  align-self: start;
+}
+.collaboration-operations-panel { order: -39; }
+.process-summary-panel { order: -38; }
+.collaboration-participants-panel { order: -37; }
+.collaboration-handover-panel { order: -36; }
+.collaboration-cohandler-panel { order: -35; }
+.collaboration-comments-panel { order: -34; }
+.process-summary-panel .process-node-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.process-summary-panel .process-node-strip div { padding: 7px 4px; }
+.process-summary-panel .process-task-definition { grid-template-columns: 1fr; gap: 8px; }
+.process-summary-panel .process-node-strip div:nth-child(3n)::after { display: none; }
+.collaboration-action-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.collaboration-action-list .button { flex: 1 0 calc(50% - 4px); justify-content: center; min-height: 30px; }
+.collaboration-hint { margin: 9px 0 0; color: #71879d; font-size: 11px; line-height: 1.55; }
+.collaboration-sidebar-panel .panel-header { align-items: flex-start; }
+.collaboration-sidebar-panel .panel-header > .button { flex: 0 0 auto; }
+.collaboration-sidebar-panel .related-ticket-row {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.collaboration-sidebar-panel .related-ticket-row > small,
+.collaboration-sidebar-panel .related-ticket-row > .modal-actions { grid-column: 1 / -1; }
+.collaboration-sidebar-panel .comment-list { max-height: 360px; overflow: auto; padding-right: 2px; }
+.collaboration-sidebar-panel .comment-list article { background: #f9fbfe; }
+.ticket-detail-layout > .identity-panel,
+.ticket-detail-layout > .related-tickets-panel { grid-column: 1; }
+
+@media (max-width: 1080px) {
+  .ticket-detail-layout { grid-template-columns: 1fr; }
+  .ticket-detail-layout > .detail-panel,
+  .ticket-detail-layout > .detail-sidebar,
+  .collaboration-sidebar-panel,
+  .process-summary-panel,
+  .ticket-detail-layout > .identity-panel,
+  .ticket-detail-layout > .related-tickets-panel { grid-column: 1 !important; order: initial; }
+  .ticket-detail-layout > .detail-sidebar { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .process-summary-panel .process-node-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .process-summary-panel .process-task-definition { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .process-summary-panel .process-node-strip div:nth-child(3n)::after { display: block; }
+}
+
 @media (max-width: 720px) {
+  .ticket-detail-layout > .detail-sidebar { grid-template-columns: 1fr; }
   .process-node-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .process-summary-panel .process-node-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .process-task-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .process-summary-panel .process-task-definition { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .related-ticket-row { grid-template-columns: max-content 1fr; }
   .related-ticket-row small { grid-column: 1 / -1; }
 }

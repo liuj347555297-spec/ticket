@@ -22,6 +22,7 @@ tags:
   - name: Comments
   - name: ServiceCatalog
   - name: ServiceCatalogAdmin
+  - name: SupportQueueAdmin
   - name: RuleMatching
   - name: Notifications
   - name: NotificationAdmin
@@ -39,6 +40,46 @@ tags:
   - name: Alerts
   - name: Observability
 paths:
+  /service-systems/{systemCode}/catalog-items:
+    get:
+      tags: [ServiceCatalog]
+      operationId: listPublishedSystemCatalogItems
+      summary: 读取当前系统下可发起的工单服务
+      description: |
+        返回完整数组，不受全局目录第一页或 100 条分页上限影响。系统必须已发布且属于当前活动 IAM 主组织。
+        未指定模块时使用系统级启用映射；指定活动模块且存在启用模块映射时采用模块映射，否则回退系统映射。
+        映射优先级先于可见性筛选：模块映射的服务全部不可见时返回空数组，不再次回退系统映射。
+        仅返回已发布的服务；受管目录必须明确适用于当前 IAM 组织，空组织不视为全局可见。
+        同 ID 受管记录优先于旧种子，即使该受管记录已停用或处于草稿也不会重新暴露旧种子。
+        旧种子服务只能通过该组织系统的显式映射进入结果。接口不暴露内部路由，也不授权部署设计器草稿。
+      parameters:
+        - name: systemCode
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_]{2,63}$'
+        - name: moduleCode
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_]{1,63}$'
+      responses:
+        '200':
+          description: 当前系统和可选模块下的完整已发布服务条目；无匹配时为空数组。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceCatalogItem'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /health:
     get:
       tags: [System]
@@ -251,8 +292,8 @@ paths:
       description: 服务端忽略或拒绝越出当前授权范围的组织、队列、人员等筛选条件；不会依赖前端过滤。
       operationId: listTickets
       parameters:
-        - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
         - name: status
           in: query
           schema:
@@ -268,15 +309,68 @@ paths:
             type: string
             minLength: 1
             maxLength: 100
+        - name: queue
+          in: query
+          description: 当前主体的个人派生视图；团队队列改用后续服务端返回的稳定 queueCode，不能提交他人身份或任意组织扩大结果集。
+          schema:
+            $ref: '#/components/schemas/TicketQueue'
+        - name: teamQueueCode
+          in: query
+          description: |
+            经服务端授权的稳定团队队列编码，与个人 `queue` 互斥。服务端按当前成员/主管关系、组织 DATA_SCOPE、目录范围和队列状态重新校验；
+            未知与未授权编码使用相同的防枚举结果，不返回队列名称、成员、总数或是否存在。
+          schema:
+            type: string
+            pattern: '^[A-Z][A-Z0-9_-]{1,63}$'
+        - name: priority
+          in: query
+          schema:
+            $ref: '#/components/schemas/TicketPriority'
+        - name: serviceCatalog
+          in: query
+          description: 服务目录编号或名称关键词；只能缩小当前授权范围。
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: requesterOrganization
+          in: query
+          description: 申请组织编号或名称关键词；只能缩小当前授权范围，不能据此声明数据权限。
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: createdFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: createdTo
+          in: query
+          schema:
+            type: string
+            format: date
       responses:
         '200':
-          description: 已按数据范围过滤的分页结果
+          description: 已按当前授权范围和查询快照过滤的键集分页结果；nextCursor 仅可由同一主体在相同授权版本和筛选条件下继续使用。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/TicketPage'
+        '400':
+          description: "`queue` 与 `teamQueueCode` 同时提交，或筛选/游标组合无效。"
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: 团队队列不存在或当前主体无权获知该队列；两种情况返回同一安全错误结构。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
     post:
       tags: [Tickets]
       summary: 创建工单
@@ -613,9 +707,9 @@ paths:
       tags: [Workflow]
       summary: 查询当前身份的 Flowable 审批待办
       description: |
-        仅服务经理或平台管理员可调用。服务端以当前 IAM 角色查询仍处于活动状态的 Flowable 候选任务，
-        再逐项校验关联工单的数据范围；业务审批投影本身不构成待办或授权依据。申请人可看到自己发起的候选任务，
-        但 `canDecide=false`，且决策接口会再次拒绝自审。响应不返回全局总数，避免通过计数推断无权任务。
+        审批申请创建时先以“策略候选集 ∩ 活动 IAM 身份 ∩ 申请时对象 DATA_SCOPE”冻结具体候选，并剔除申请人；
+        待办读取时再以“冻结候选集 ∩ 当前活动 Flowable 指派任务 ∩ 当前对象 DATA_SCOPE”过滤；业务投影本身不构成待办或授权依据。
+        响应不返回完整冻结候选身份、无权任务或全局总数，避免通过人员与计数枚举审批范围。
       operationId: listFlowableApprovalTasks
       parameters:
         - name: page
@@ -691,7 +785,7 @@ paths:
     post:
       tags: [Workflow]
       summary: 对受控跳转 Flowable 审批任务作出决策
-      description: 仅服务经理或平台管理员候选角色可处理，且申请人不得自审。服务端先完成独立 Flowable 用户任务，再原子更新审批投影和审计；通过并不等于执行迁移。
+      description: 决策时执行第三阶段重算：“冻结候选集 ∩ 当前活动任务受让人 ∩ 当前有效角色/对象 DATA_SCOPE”，并再次拒绝自审；任一不命中即拒绝。服务端先完成独立 Flowable 用户任务，再原子更新审批投影和审计；响应不返回完整冻结候选身份，通过也不等于执行迁移。
       operationId: decideControlledJumpApproval
       parameters:
         - $ref: '#/components/parameters/TicketId'
@@ -710,6 +804,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ControlledJumpApprovalProjection'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tickets/{ticketId}/workflow/lifecycle-approval-requests/{requestId}/decisions:
+    post:
+      tags: [Workflow]
+      summary: 对高风险生命周期动作审批作出决策
+      description: 适用于挂起、升级、撤销和重开。创建时按“策略候选集 ∩ 活动 IAM ∩ 申请时对象 DATA_SCOPE”冻结候选并剔除申请人；决策时再与当前活动任务受让人、当前角色和 DATA_SCOPE 取交集。审批通过后仅由服务端在版本仍一致时执行，不提供浏览器执行入口，响应不返回完整冻结候选身份。
+      operationId: decideLifecycleActionApproval
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+        - $ref: '#/components/parameters/WorkflowApprovalRequestId'
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalDecisionRequest'
+      responses:
+        '200':
+          description: 审批决定及服务端执行结果摘要；不返回冻结候选人身份。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LifecycleActionApprovalSummary'
         '400':
           $ref: '#/components/responses/ValidationFailed'
         '401':
@@ -1092,6 +1219,73 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /admin/service-catalog/items/{serviceCatalogItemId}/publish-requests/{requestId}/approve:
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 复核并发布服务目录表单版本
+      description: 仅受控后台职责可操作；审批人不得为申请人。服务端再次验证草稿版本、字段白名单、字典引用、组织数据范围与乐观锁后才生成新的已发布版本。
+      operationId: approveServiceCatalogPublication
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^FPR-[0-9a-fA-F-]{36}$' }
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已发布的新表单版本
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagedServiceCatalogItem' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/service-catalog/items/{serviceCatalogItemId}/retire:
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 停用已发布服务目录
+      description: 停用不删除历史工单和版本快照；必须传入当前乐观锁版本与变更原因。
+      operationId: retireServiceCatalogItem
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ServiceCatalogPublishRequest' } } }
+      responses:
+        '200': { description: 已停用, content: { application/json: { schema: { $ref: '#/components/schemas/ManagedServiceCatalogItem' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/service-catalog/items/{serviceCatalogItemId}/rollback:
+    post:
+      tags: [ServiceCatalogAdmin]
+      summary: 基于历史已发布版本新建回滚草稿
+      description: 回滚只复制不可变历史版本为新草稿，仍须走双人复核发布，不能重写历史版本。
+      operationId: createServiceCatalogRollbackDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/ServiceCatalogItemId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sourceFormVersion, reason]
+              properties:
+                sourceFormVersion: { type: integer, minimum: 1 }
+                reason: { type: string, minLength: 4, maxLength: 500 }
+      responses:
+        '200': { description: 回滚草稿, content: { application/json: { schema: { $ref: '#/components/schemas/ManagedServiceCatalogItem' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /admin/service-catalog/dictionaries/{dictionaryCode}:
     get:
       tags: [ServiceCatalogAdmin]
@@ -1206,6 +1400,469 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+  /admin/support-queues:
+    get:
+      tags: [SupportQueueAdmin]
+      summary: 查询当前管理范围内的团队队列
+      description: |
+        仅返回当前主体同时具备管理角色、目标组织 DATA_SCOPE 和队列管理关系的队列。空范围关闭式返回空页或统一 403；
+        不返回未授权队列的编码、名称、成员、数量或状态差异。`MIGRATION_PENDING` 仅对同范围管理/审计主体可见。
+      operationId: listManagedSupportQueues
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/SupportQueueStatus'
+      responses:
+        '200':
+          description: 已按角色、组织 DATA_SCOPE 和队列管理关系过滤的队列页。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueuePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 创建团队队列草稿
+      description: 创建后稳定 code 不可修改；服务端校验管理角色、归属组织 DATA_SCOPE、非空目录/范围、活动成员与主管。请求不能声明成员 IAM 角色或数据范围。
+      operationId: createSupportQueueDraft
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportQueueCreateRequest'
+      responses:
+        '201':
+          description: 团队队列草稿已创建。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueue'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/support-queues/{supportQueueCode}:
+    get:
+      tags: [SupportQueueAdmin]
+      summary: 获取团队队列配置
+      description: 逐对象校验管理角色、组织 DATA_SCOPE 和队列管理关系；未知与未授权 code 统一返回防枚举 404。
+      operationId: getManagedSupportQueue
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+      responses:
+        '200':
+          description: 已授权团队队列配置。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueue'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [SupportQueueAdmin]
+      summary: 更新团队队列草稿或活动配置
+      description: 稳定 code 不可修改；成员、范围、共享领取和有效期均按 expectedVersion 乐观锁更新。影响在办任务的缩小范围需另走停用/迁移预演，不能由本操作静默迁移。
+      operationId: updateSupportQueue
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportQueueUpdateRequest'
+      responses:
+        '200':
+          description: 队列配置已更新并产生新版本。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueue'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/support-queues/{supportQueueCode}/activate:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 激活团队队列
+      description: 重新校验非空组织/目录范围、至少一个活动 MEMBER 和 SUPERVISOR、IAM 角色/有效期及节点路由引用；任一为空或不可验证时关闭式失败。
+      operationId: activateSupportQueue
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportQueueStateChangeRequest'
+      responses:
+        '200':
+          description: 队列已激活，可按已发布路由接收新任务。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueue'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/support-queues/{supportQueueCode}/deactivate:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 停用并迁移团队队列
+      deprecated: true
+      description: |
+        服务端先预演未领取、在办、SLA 与范围影响；未领取任务可原子迁移到经验证的 replacementQueueCode，在办任务保留主办和 SLA 并进入逐单交接。
+        存在无替代范围或不可迁移任务时拒绝停用。停用不删除历史队列、成员、路由或责任快照。
+      operationId: deactivateSupportQueue
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportQueueStateChangeRequest'
+      responses:
+        '200':
+          description: 队列已停用并返回迁移摘要。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportQueueStateChangeResult'
+        '400':
+          $ref: '#/components/responses/ValidationFailed'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/support-queues/{supportQueueCode}/migration-plans:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 创建团队队列停用预演计划
+      description: |
+        冻结源/目标队列版本、范围摘要、查询快照和逐任务清单；不迁移任务、不创建交接、不停用队列。
+        同一主体/方法/资源下，同 Idempotency-Key 且同规范化请求指纹返回原计划；同键异指纹返回 409 且无副作用。
+      operationId: createSupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanCreateRequest' }
+      responses:
+        '201':
+          description: 预演计划已创建；存在阻断项时状态为 PREFLIGHT_FAILED。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queues/{supportQueueCode}/migration-plans/{migrationPlanId}:
+    get:
+      tags: [SupportQueueAdmin]
+      summary: 查询停用计划和逐项结果
+      description: 返回当前管理范围内的计划状态、审批/范围摘要和可分页逐任务结果；未知与未授权计划统一 404，不返回无权工单正文或人员身份。
+      operationId: getSupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/SupportQueueMigrationPlanId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 已授权计划及逐项结果。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanView' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/support-queues/{supportQueueCode}/migration-plans/{migrationPlanId}/approve:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 审批团队队列停用计划
+      description: 申请人不得自审；审批只对冻结清单哈希和计划版本有效。同键同指纹重放返回原审批结果，同键异指纹返回 409。
+      operationId: approveSupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/SupportQueueMigrationPlanId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanCommandRequest' }
+      responses:
+        '200':
+          description: 计划审批状态已更新。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queues/{supportQueueCode}/migration-plans/{migrationPlanId}/execute:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 执行已批准的团队队列停用计划
+      description: 原子保留计划后按冻结清单执行；未领取任务迁移，在办任务仅创建交接清单。重放不得重复迁移、交接、通知或审计。
+      operationId: executeSupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/SupportQueueMigrationPlanId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanCommandRequest' }
+      responses:
+        '202':
+          description: 执行已接收；客户端按计划查询接口读取最终及逐项状态。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queues/{supportQueueCode}/migration-plans/{migrationPlanId}/retry:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 重试停用计划的可重试失败项
+      description: 仅处理 PENDING 或 RETRYABLE_FAILED 项，已成功项返回原结果引用并跳过；同键同指纹重放不重复副作用。
+      operationId: retrySupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/SupportQueueMigrationPlanId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanCommandRequest' }
+      responses:
+        '202':
+          description: 重试已接收。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queues/{supportQueueCode}/migration-plans/{migrationPlanId}/cancel:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 取消尚未执行的停用计划
+      description: 仅 DRAFT/PREFLIGHT_FAILED/PENDING_APPROVAL/APPROVED 计划可取消；执行中或已有成功项的计划不能通过取消隐藏结果。同键重放返回原取消结果。
+      operationId: cancelSupportQueueMigrationPlan
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/SupportQueueCode'
+        - $ref: '#/components/parameters/SupportQueueMigrationPlanId'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueMigrationPlanCommandRequest' }
+      responses:
+        '200':
+          description: 计划已取消。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queue-idempotency/status:
+    get:
+      tags: [SupportQueueAdmin]
+      summary: 查询当前主体的一次队列写入幂等状态
+      description: |
+        使用 `Idempotency-Key` 请求头查询与当前 IAM 主体绑定的队列写操作。未知键与其他主体的键返回相同 404；
+        响应不返回规范化请求、请求指纹、HMAC、keyVersion、租约令牌、执行节点内部标识或敏感错误。客户端在 IN_PROGRESS/超时场景必须保留原键查询，不得换键盲目重试。
+        HMAC 指纹计算、常量时间比较和 keyVersion 轮换完全由服务端管理，对客户端透明。
+      operationId: getSupportQueueIdempotencyStatus
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 当前主体可见的安全幂等状态摘要。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueIdempotencyStatus' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /admin/support-queue-idempotency/{idempotencyKey}/reconcile:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 提交历史队列幂等记录人工对账结论
+      description: |
+        仅处理 `RECONCILIATION_REQUIRED` 历史记录。申请人提交“确认既有结果”或“最终失败”结论、理由和受控证据引用；
+        本操作不补算 HMAC、不重放原业务，也不直接改变最终状态，必须由另一名有权人员复核。未知或无权原 key 统一 404。
+        路径 key 仅定位历史记录；请求头 Idempotency-Key 是本次对账命令的独立幂等键。
+      operationId: reconcileLegacySupportQueueIdempotency
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/HistoricalIdempotencyKey'
+        - $ref: '#/components/parameters/IdempotencyIfMatch'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliationRequest' }
+      responses:
+        '202':
+          description: 对账结论已提交，等待独立复核；未改变历史业务结果。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliation' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /admin/support-queue-idempotency/{idempotencyKey}/reconcile/{reconciliationId}/approve:
+    post:
+      tags: [SupportQueueAdmin]
+      summary: 独立复核历史幂等对账结论
+      description: |
+        复核人必须不同于申请人，并再次命中原记录的队列管理角色和组织 DATA_SCOPE。通过后只能把历史记录归为
+        `LEGACY_RESULT_ONLY` 或 `FAILED_FINAL`；拒绝则保留 `RECONCILIATION_REQUIRED`。不得生成 HMAC、重放原业务或改写旧事件。未知/无权 key 或对账单统一 404。
+      operationId: approveLegacySupportQueueIdempotencyReconciliation
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      x-replay-protection: subject-method-resource-idempotency-key-and-canonical-request-fingerprint
+      parameters:
+        - $ref: '#/components/parameters/HistoricalIdempotencyKey'
+        - $ref: '#/components/parameters/SupportQueueIdempotencyReconciliationId'
+        - $ref: '#/components/parameters/IdempotencyIfMatch'
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliationApprovalRequest' }
+      responses:
+        '200':
+          description: 对账复核已完成，并返回最终或仍需对账状态。
+          headers:
+            Idempotency-Status: { $ref: '#/components/headers/IdempotencyStatus' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliation' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /notifications:
     get:
       tags: [Notifications]
@@ -1734,8 +2391,9 @@ paths:
       tags: [KnowledgeBase]
       summary: 检索已发布知识库文档
       description: |
-        只检索当前主体按组织、服务和文档可见性有权查看的已发布版本。关键词和标签仅作为受控检索条件，
+        只检索 owningOrganizationId 等于当前 IAM 组织、serviceCatalogItemIds 与当前目录范围相交且状态为 PUBLISHED 的版本。关键词和标签仅作为受控检索条件，
         不执行 AI、向量检索、外部模型调用或自动生成；不得通过分页、关键词或标签枚举草稿、隔离文件或其他组织文档。
+        当前 IAM 组织/目录范围为空或不可验证时关闭式返回空结果或统一 403，不回退为平台组织、全局知识或仅按角色过滤。
       operationId: searchKnowledgeArticles
       parameters:
         - $ref: '#/components/parameters/Page'
@@ -1768,6 +2426,8 @@ paths:
                 $ref: '#/components/schemas/KnowledgeArticlePage'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
   /knowledge/articles/{knowledgeArticleId}:
     get:
       tags: [KnowledgeBase]
@@ -1775,6 +2435,7 @@ paths:
       description: |
         返回当前主体有权查看的已发布冻结版本及已扫描通过的受控附件元数据；绝不返回草稿、导入源文件、扫描报告、审核意见或原始存储路径。
         文档正文按纯文本或服务端净化后的受限富文本输出，禁止客户端解释脚本、Office 宏或任意嵌入内容。
+        文档不存在、非 PUBLISHED、组织不等于当前 IAM 组织或目录范围不相交均返回相同 404；可见对象上的动作权限不足才返回统一 403。
       operationId: getKnowledgeArticle
       parameters:
         - $ref: '#/components/parameters/KnowledgeArticleId'
@@ -1788,18 +2449,19 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/KnowledgeObjectNotFound'
   /admin/knowledge/import-jobs:
     post:
       tags: [KnowledgeBaseAdmin]
       summary: 创建知识库文档导入任务
       description: |
         管理员只能向自身有管理范围的知识库导入文件。源文件始终先写隔离区并扫描；解析、文本抽取和版本草稿创建仅在扫描通过后执行。
-        不接受客户端指定存储路径、解析器、正文、发布状态、审核人或可见范围；本接口不调用 AI、向量索引或自动发布。
+        owningOrganizationId 只能由服务端当前 IAM 主组织固化；客户端必须提交非空 serviceCatalogItemIds，服务端逐个校验已发布且命中组织 DATA_SCOPE。
+        不接受客户端指定存储路径、解析器、正文、发布状态、审核人或可见范围；兼容字段 targetOrganizationIamId 已废弃且不得参与归属计算。本接口不调用 AI、向量索引或自动发布。
       operationId: createKnowledgeImportJob
-      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
       x-replay-protection: subject-knowledge-import-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/CsrfToken'
@@ -1822,7 +2484,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '413':
@@ -1831,9 +2493,9 @@ paths:
     get:
       tags: [KnowledgeBaseAdmin]
       summary: 查询知识库导入任务状态
-      description: 仅任务创建者或同一管理范围的知识库管理员可见；结果仅返回脱敏状态、原因码和草稿引用，不返回原始文件、扫描报告、解析器错误详情或存储位置。
+      description: 仅任务创建者或同时具备管理角色与 owningOrganizationId DATA_SCOPE 的管理员可见；未知任务和范围不命中统一 404。结果仅返回脱敏状态、原因码和草稿引用，不返回原始文件、扫描报告、解析器错误详情或存储位置。
       operationId: getKnowledgeImportJob
-      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
       parameters:
         - $ref: '#/components/parameters/KnowledgeImportJobId'
       responses:
@@ -1846,16 +2508,16 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/KnowledgeObjectNotFound'
   /admin/knowledge/articles/{knowledgeArticleId}/versions:
     get:
       tags: [KnowledgeBaseAdmin]
       summary: 查询知识库文档版本
-      description: 仅在当前管理范围内返回不可变版本元数据和生命周期状态；草稿正文、原始文件和扫描详情按最小权限另行受控，版本不得原地改写或删除。
+      description: 仅在管理角色与文档 owningOrganizationId DATA_SCOPE 同时命中、目录范围相交时返回不可变版本元数据；与列表、审核队列和预览复用同一谓词。未知文档和范围不命中统一 404，版本不得原地改写或删除。
       operationId: listKnowledgeArticleVersions
-      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN, AUDITOR]
       parameters:
         - $ref: '#/components/parameters/KnowledgeArticleId'
       responses:
@@ -1868,18 +2530,42 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/KnowledgeObjectNotFound'
+  /admin/knowledge/review-queue:
+    get:
+      tags: [KnowledgeBaseAdmin]
+      summary: 查询当前管理范围内的知识审核队列
+      description: |
+        仅返回管理角色与 owningOrganizationId DATA_SCOPE 同时命中、serviceCatalogItemIds 范围相交的待审核版本；与管理列表、版本和预览复用同一谓词。
+        空范围关闭式返回空页或统一 403，不返回其他组织候选数量、完整候选审核人身份或可用于枚举的总数差异。
+      operationId: listKnowledgeReviewQueue
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 已按统一知识管理谓词过滤的审核队列。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeReviewQueuePage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
   /admin/knowledge/articles/{knowledgeArticleId}/versions/{knowledgeVersion}/publish-requests:
     post:
       tags: [KnowledgeBaseAdmin]
       summary: 提交知识库版本发布审核
       description: |
         发布申请冻结指定草稿版本并创建双人复核/审批，申请人不得审核自己的版本。服务端再次验证文档范围、版本完整性、
-        所有关联文件均为 SCAN_PASSED、正文净化结果和引用一致性；任一文件未通过扫描、被隔离、拒绝、逻辑删除保留或扫描服务故障时均不得发布。
+        owningOrganizationId、非空 serviceCatalogItemIds、当前角色与 DATA_SCOPE，以及所有关联文件均为 SCAN_PASSED、正文净化结果和引用一致性；
+        任一范围不命中、目录失效或文件未通过扫描、被隔离、拒绝、逻辑删除保留或扫描服务故障时均不得发布。
       operationId: requestKnowledgeArticlePublication
-      x-required-platform-roles: [KNOWLEDGE_MANAGER]
+      x-required-platform-roles: [SERVICE_MANAGER, PLATFORM_ADMIN]
       x-replay-protection: subject-knowledge-version-publication-request-fingerprint
       parameters:
         - $ref: '#/components/parameters/KnowledgeArticleId'
@@ -1904,9 +2590,9 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          $ref: '#/components/responses/Forbidden'
+          $ref: '#/components/responses/KnowledgeScopeForbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/KnowledgeObjectNotFound'
         '409':
           $ref: '#/components/responses/Conflict'
   /tickets/{ticketId}/sla:
@@ -2859,6 +3545,128 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /workflow/ticket-lifecycle/diagram:
+    get:
+      tags: [Workflow]
+      operationId: getTicketLifecycleBpmnDiagram
+      summary: 只读预览当前已部署生命周期的安全 BPMN XML 与 DI
+      description: 不触发部署。原定义无 DI 时仅生成展示坐标；XML 不包含执行扩展或身份配置。
+      responses:
+        '200':
+          description: 展示投影（无已部署定义时明确不可用）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkflowBpmnDiagram' }
+        '401': { description: 未认证 }
+  /tickets/{ticketId}/workflow/diagram:
+    get:
+      tags: [Workflow]
+      operationId: getTicketInstanceBpmnDiagram
+      summary: 经工单对象鉴权读取实例冻结版本的 BPMN 展示投影
+      description: 缺少实例定义快照时返回 UNAVAILABLE_LEGACY，绝不以 latest 替代历史。高亮来自该实例的实际引擎活动与历史。
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^TKT-[0-9]{8}-[0-9]{6}$' }
+      responses:
+        '200':
+          description: 冻结定义图或明确遗留不可用状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkflowBpmnDiagram' }
+        '401': { description: 未认证 }
+        '404': { description: 工单不存在或不可见 }
+  /admin/design-studio/drafts:
+    get:
+      tags: [ServiceCatalogAdmin]
+      operationId: listDesignStudioDrafts
+      summary: 按当前组织数据范围列出设计草稿
+      responses:
+        '200':
+          description: 管理者或审计员可见的设计包摘要
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/StudioDraftSummary' }
+        '403': { description: 无管理读取权限 }
+    post:
+      tags: [ServiceCatalogAdmin]
+      operationId: createDesignStudioDraft
+      summary: 创建系统内多表单 BPMN 设计包，不部署、不执行
+      description: |
+        SERVICE_MANAGER 与组织范围，或 PLATFORM_ADMIN。初始 version=0；DRAFT_ONLY。相同调用者/幂等键/初始配置重试不重复创建，冲突返回409。
+        只接收白名单 BPMN 与控件元数据。新内嵌界面必须指定真实 systemCode，组织继承并匹配该系统；已有客户端省略归属仍可创建未归属旧格式草稿。
+        可选 serviceCatalogItemId 必须真实存在，并具有该系统级启用映射或该系统某个活动模块的启用映射；服务不能脱离系统单独指定。
+        这是设计关联，不要求系统已发布，也不产生可执行流程发布。
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, pattern: '^[0-9a-fA-F-]{8,64}$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudioDraftInput' }
+      responses:
+        '201':
+          description: 已保存的设计包草稿
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudioDraft' }
+        '400': { description: 非法 XML、控件、表单、节点绑定、系统或服务映射 }
+        '403': { description: 角色或组织范围不允许 }
+        '409': { description: 幂等键内容冲突 }
+  /admin/design-studio/drafts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^DS-[0-9a-f-]{36}$' }
+    get:
+      tags: [ServiceCatalogAdmin]
+      operationId: getDesignStudioDraft
+      responses:
+        '200':
+          description: 可见组织范围内的完整设计包
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudioDraft' }
+        '403': { description: 角色或组织范围不允许 }
+        '404': { description: 设计包不存在 }
+    put:
+      tags: [ServiceCatalogAdmin]
+      operationId: updateDesignStudioDraft
+      summary: 乐观锁保存设计包；不可修改所属组织、已归属系统/服务或冻结设计修订
+      description: |
+        缺少归属字段的历史 JSON 按未归属读取，可用正常版本锁明确归入同组织真实系统。
+        已有 systemCode 不得更换或清除；已有 serviceCatalogItemId 不得更换或清除；系统级设计可后加服务。
+        每次保存重新验证真实系统组织、主体范围与服务启用映射。冻结表单不可删除/修改，DRAFT_ONLY 不变。
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string, pattern: '^"?[0-9]{1,18}"?$' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StudioDraftInput' }
+      responses:
+        '200':
+          description: version递增后的设计包，业务表单修订号不随保存递增
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StudioDraft' }
+        '400': { description: 非法配置或试图改写冻结修订 }
+        '403': { description: 角色或组织范围不允许 }
+        '409': { description: If-Match、请求version与当前version不一致 }
 components:
   securitySchemes:
     sessionCookie:
@@ -2871,6 +3679,12 @@ components:
       in: header
       name: X-Integration-Signature
       description: 仅受管连接器回调使用的签名头。服务端必须基于受管 secretRef、原始请求体、时间戳和事件 ID 验签；该头不是用户会话或通用 API 密钥。
+  headers:
+    IdempotencyStatus:
+      description: 当前请求的服务端幂等状态；REPLAYED 表示返回首次等价结果，客户端不得据此更换键。HMAC 与 keyVersion 永不通过响应头暴露。
+      schema:
+        type: string
+        enum: [RECEIVED, IN_PROGRESS, COMPLETED, REPLAYED, RETRYABLE_FAILED, FAILED, LEGACY_RESULT_ONLY, RECONCILIATION_REQUIRED, FAILED_FINAL]
   parameters:
     CsrfToken:
       name: X-CSRF-Token
@@ -2886,9 +3700,10 @@ components:
       in: header
       required: true
       description: |
-        客户端为一次写入意图生成的 UUID。服务端将键绑定到认证主体、接口、目标工单/任务和规范化请求指纹；
+        客户端为一次写入意图生成的 UUID。服务端将键绑定到认证主体、方法、规范化资源/动作（工单、任务、队列或迁移计划）和规范化请求指纹；
         同一绑定在受控保留期内仅执行一次并返回原结果，使用相同键但不同指纹必须返回 IDEMPOTENCY_CONFLICT。
-        键不可跨主体、工单、任务或操作复用，且服务端记录首次接收时间、结果和审计关联以防重放。
+        键不可跨主体、资源或操作复用，且服务端记录首次接收时间、处理中/完成/失败状态、原结果和审计关联以防重放。
+        请求指纹由服务端使用受管 HMAC 密钥计算并常量时间比较；客户端不提交/接收指纹或 keyVersion，密钥轮换对客户端透明。
       schema:
         type: string
         format: uuid
@@ -2988,6 +3803,46 @@ components:
       schema:
         type: integer
         minimum: 1
+    SupportQueueCode:
+      name: supportQueueCode
+      in: path
+      required: true
+      description: 团队队列稳定编码；只用于定位，服务端仍逐对象校验管理角色、组织 DATA_SCOPE 和队列管理关系。未知与未授权编码按相同防枚举策略处理。
+      schema:
+        type: string
+        pattern: '^[A-Z][A-Z0-9_-]{1,63}$'
+    SupportQueueMigrationPlanId:
+      name: migrationPlanId
+      in: path
+      required: true
+      description: 停用迁移计划稳定 ID；未知与未授权计划统一按防枚举策略处理。
+      schema:
+        type: string
+        pattern: '^SQMP-[A-Za-z0-9_-]{8,64}$'
+    HistoricalIdempotencyKey:
+      name: idempotencyKey
+      in: path
+      required: true
+      description: 历史队列写入的原幂等键，仅用于有权人工对账定位；未知与无权记录返回相同 404。不得记录在应用日志或分析事件中。
+      schema:
+        type: string
+        format: uuid
+    SupportQueueIdempotencyReconciliationId:
+      name: reconciliationId
+      in: path
+      required: true
+      description: 人工对账申请 ID；不构成读取或复核权限。
+      schema:
+        type: string
+        pattern: '^SQIR-[A-Za-z0-9_-]{8,64}$'
+    IdempotencyIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: 历史幂等记录或对账申请的当前版本 ETag；版本变化时返回 409，客户端必须重新读取后处理。
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
     WorkflowTaskId:
       name: taskId
       in: path
@@ -3161,6 +4016,14 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    Cursor:
+      name: cursor
+      in: query
+      description: 服务端签名的不透明分页游标；绑定当前主体、授权版本、筛选、排序、快照上界和上一页边界，客户端不得解析或修改。
+      schema:
+        type: string
+        minLength: 20
+        maxLength: 2048
   responses:
     ValidationFailed:
       description: 请求字段或服务目录规则校验失败
@@ -3182,6 +4045,18 @@ components:
             $ref: '#/components/schemas/ApiError'
     NotFound:
       description: 对象不存在或按防枚举策略不可见
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    KnowledgeScopeForbidden:
+      description: 当前主体缺少知识管理角色、目标组织 DATA_SCOPE 或目录范围；不返回对象、候选人、数量或其他组织是否存在的差异。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    KnowledgeObjectNotFound:
+      description: 知识对象不存在，或其组织、目录、状态不在当前主体统一读取/管理谓词内；两种情况返回相同安全结构以防枚举。
       content:
         application/problem+json:
           schema:
@@ -3222,6 +4097,107 @@ components:
           schema:
             $ref: '#/components/schemas/ApiError'
   schemas:
+    WorkflowBpmnDiagram:
+      type: object
+      required: [processKey, processDefinitionId, version, bpmnXml, layoutSource, activeNodeIds, completedNodeIds, availability]
+      properties:
+        processKey: { type: string }
+        processDefinitionId: { type: [string, 'null'] }
+        version: { type: [integer, 'null'] }
+        bpmnXml: { type: [string, 'null'], description: 剥离执行扩展的标准BPMN与DI，仅展示、不可部署 }
+        layoutSource: { type: string, enum: [AUTHORED, GENERATED, NONE] }
+        activeNodeIds: { type: array, items: { type: string } }
+        completedNodeIds: { type: array, items: { type: string } }
+        availability: { type: string, enum: [AVAILABLE, UNAVAILABLE_LEGACY] }
+    StudioField:
+      type: object
+      additionalProperties: false
+      required: [id, code, label, control, controlVersion, required, sensitive, helpText, options]
+      properties:
+        id: { type: string, maxLength: 128 }
+        code: { type: string, pattern: '^[a-z][a-z0-9_]{0,63}$', description: 表单内唯一；拒绝系统保留字段 }
+        label: { type: string, minLength: 1, maxLength: 80 }
+        control: { type: string, enum: [text, textarea, number, date, datetime, select, multiselect, boolean, richtext, tags, ci, attachment, iam, user, section] }
+        controlVersion: { type: integer, const: 1 }
+        required: { type: boolean }
+        sensitive: { type: boolean }
+        helpText: { type: string, maxLength: 300 }
+        dictionaryCode: { type: [string, 'null'], pattern: '^[A-Z][A-Z0-9_]{1,62}$' }
+        options:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [value, label]
+            properties:
+              value: { type: string, minLength: 1, maxLength: 100 }
+              label: { type: string, minLength: 1, maxLength: 100 }
+    StudioFormRevision:
+      type: object
+      additionalProperties: false
+      required: [formId, code, name, revision, status, fields]
+      properties:
+        formId: { type: string, maxLength: 128 }
+        code: { type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{0,63}$' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        revision: { type: integer, minimum: 1, maximum: 100000, description: 同一表单新增修订为max+1，旧绑定不自动升级 }
+        status: { type: string, enum: [DRAFT, FROZEN], description: FROZEN只是不可变设计快照，不是发布 }
+        fields: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StudioField' } }
+    StudioNodeFormBinding:
+      type: object
+      additionalProperties: false
+      required: [nodeId, formId, formRevision, displayOrder, mode, requiredOnComplete]
+      properties:
+        nodeId: { type: string, description: 当前BPMN内存在的startEvent或userTask }
+        formId: { type: string }
+        formRevision: { type: integer, minimum: 1 }
+        displayOrder: { type: integer, minimum: 1, maximum: 500, description: 同节点内顺序不重复 }
+        mode: { type: string, enum: [EDIT, READ_ONLY] }
+        requiredOnComplete: { type: boolean }
+    StudioDraftInput:
+      type: object
+      additionalProperties: false
+      required: [version, name, organizationId, bpmnXml, forms, nodeBindings, reason]
+      properties:
+        version: { type: integer, format: int64, minimum: 0 }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        organizationId: { type: string, maxLength: 128 }
+        systemCode: { type: [string, 'null'], pattern: '^[A-Z][A-Z0-9_]{2,63}$', description: 真实系统归属；旧客户端可省略，新界面必须先保存系统。已归属后不可清除或更换。 }
+        serviceCatalogItemId: { type: [string, 'null'], pattern: '^[A-Za-z0-9_-]{3,64}$', description: 可选系统内服务，必须与系统或其活动模块有启用映射；不得在无系统时指定。已关联后不可清除或换绑。 }
+        bpmnXml: { type: string, minLength: 1, maxLength: 524288, description: UTF-8编码上限512KiB；单process标准BPMN/DI白名单；禁止isExecutable=true、DTD/实体、脚本、表达式、执行扩展 }
+        forms: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/StudioFormRevision' } }
+        nodeBindings: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/StudioNodeFormBinding' } }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    StudioDraft:
+      type: object
+      additionalProperties: false
+      required: [id, version, name, organizationId, bpmnXml, forms, nodeBindings, reason, executionMode, updatedAt]
+      properties:
+        id: { type: string }
+        version: { type: integer, format: int64, minimum: 0 }
+        name: { type: string }
+        organizationId: { type: string }
+        systemCode: { type: [string, 'null'] }
+        serviceCatalogItemId: { type: [string, 'null'] }
+        bpmnXml: { type: string }
+        forms: { type: array, items: { $ref: '#/components/schemas/StudioFormRevision' } }
+        nodeBindings: { type: array, items: { $ref: '#/components/schemas/StudioNodeFormBinding' } }
+        reason: { type: string }
+        executionMode: { type: string, const: DRAFT_ONLY }
+        updatedAt: { type: string, format: date-time }
+    StudioDraftSummary:
+      type: object
+      required: [id, name, organizationId, version, executionMode, updatedAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        organizationId: { type: string }
+        systemCode: { type: [string, 'null'] }
+        serviceCatalogItemId: { type: [string, 'null'] }
+        version: { type: integer, format: int64 }
+        executionMode: { type: string, const: DRAFT_ONLY }
+        updatedAt: { type: string, format: date-time }
     HealthResponse:
       type: object
       additionalProperties: false
@@ -3425,7 +4401,7 @@ components:
       properties:
         scopeType:
           type: string
-          enum: [ORGANIZATION, SERVICE, QUEUE, CONFIGURATION_ITEM]
+          enum: [ORGANIZATION, SERVICE, SERVICE_CATALOG, SERVICE_SYSTEM, QUEUE, CONFIGURATION_ITEM]
         scopeId:
           type: string
           maxLength: 128
@@ -4262,6 +5238,423 @@ components:
     TicketStatus:
       type: string
       enum: [DRAFT, SUBMITTED, PENDING_CLASSIFICATION, PENDING_ASSIGNMENT, PENDING_ACCEPTANCE, IN_PROGRESS, RESOLVED, PENDING_USER_FEEDBACK, CLOSED, CANCELLED, ON_HOLD]
+    TicketQueue:
+      type: string
+      description: 当前主体派生的个人工作视图；不是可由客户端创建或指定成员的团队队列。
+      enum: [ALL, MY_TODO, OVERDUE, TODAY_COMPLETED, MY_DONE, MY_REQUESTED, DRAFTS, TO_READ]
+    SupportQueueStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, INACTIVE, MIGRATION_PENDING]
+    SupportQueueMemberRole:
+      type: string
+      enum: [MEMBER, SUPERVISOR]
+    SupportQueueScopeType:
+      type: string
+      enum: [ORGANIZATION, SERVICE_CATALOG, SERVICE_SYSTEM, CONFIGURATION_ITEM]
+    SupportQueueScope:
+      type: object
+      additionalProperties: false
+      required: [scopeType, scopeId]
+      properties:
+        scopeType:
+          $ref: '#/components/schemas/SupportQueueScopeType'
+        scopeId:
+          type: string
+          minLength: 1
+          maxLength: 128
+    SupportQueueMember:
+      type: object
+      additionalProperties: false
+      required: [iamUserId, role, effectiveFrom]
+      properties:
+        iamUserId:
+          type: string
+          maxLength: 128
+        role:
+          $ref: '#/components/schemas/SupportQueueMemberRole'
+        effectiveFrom:
+          type: string
+          format: date-time
+        effectiveUntil:
+          type: string
+          format: date-time
+          nullable: true
+    SupportQueue:
+      type: object
+      additionalProperties: false
+      required: [code, name, owningOrganizationId, serviceCatalogItemIds, scopes, members, sharedClaimEnabled, status, effectiveFrom, version]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_-]{1,63}$'
+          description: 创建后不可变的稳定编码。
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        owningOrganizationId:
+          type: string
+          maxLength: 128
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/SupportQueueScope'
+        members:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/SupportQueueMember'
+        sharedClaimEnabled:
+          type: boolean
+        capacityLimit:
+          type: integer
+          minimum: 1
+          maximum: 100000
+        effectiveFrom:
+          type: string
+          format: date-time
+        effectiveUntil:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          $ref: '#/components/schemas/SupportQueueStatus'
+        version:
+          type: integer
+          minimum: 0
+    SupportQueueCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [code, name, owningOrganizationId, serviceCatalogItemIds, scopes, members, sharedClaimEnabled, effectiveFrom, reason]
+      properties:
+        code: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        name: { type: string, minLength: 2, maxLength: 200 }
+        owningOrganizationId: { type: string, maxLength: 128 }
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/SupportQueueScope' }
+        members:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/SupportQueueMember' }
+        sharedClaimEnabled: { type: boolean }
+        capacityLimit: { type: integer, minimum: 1, maximum: 100000 }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveUntil: { type: string, format: date-time, nullable: true }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    SupportQueueUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, owningOrganizationId, serviceCatalogItemIds, scopes, members, sharedClaimEnabled, effectiveFrom, reason, expectedVersion]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 200 }
+        owningOrganizationId: { type: string, maxLength: 128 }
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: '#/components/schemas/SupportQueueScope' }
+        members:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/SupportQueueMember' }
+        sharedClaimEnabled: { type: boolean }
+        capacityLimit: { type: integer, minimum: 1, maximum: 100000 }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveUntil: { type: string, format: date-time, nullable: true }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+        expectedVersion: { type: integer, minimum: 0 }
+    SupportQueueStateChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, reason]
+      properties:
+        expectedVersion: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+        effectiveAt: { type: string, format: date-time }
+        replacementQueueCode:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_-]{1,63}$'
+          description: 停用存在未领取任务时必填；必须为当前主体有权管理且范围兼容的活动队列。
+    SupportQueueStateChangeResult:
+      type: object
+      additionalProperties: false
+      required: [queue, migratedUnclaimedCount, retainedInProgressCount, auditEventId]
+      properties:
+        queue: { $ref: '#/components/schemas/SupportQueue' }
+        migratedUnclaimedCount: { type: integer, minimum: 0 }
+        retainedInProgressCount: { type: integer, minimum: 0 }
+        auditEventId: { type: string, maxLength: 128 }
+    SupportQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupportQueue' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        total:
+          type: integer
+          minimum: 0
+          description: 仅当前管理范围内队列数量。
+    SupportQueueMigrationPlanStatus:
+      type: string
+      enum: [DRAFT, PREFLIGHT_FAILED, PENDING_APPROVAL, APPROVED, EXECUTING, PARTIALLY_COMPLETED, COMPLETED, FAILED, STALE, CANCELLED]
+    SupportQueueMigrationItemType:
+      type: string
+      enum: [UNCLAIMED_TASK_MIGRATION, IN_PROGRESS_HANDOVER]
+    SupportQueueMigrationItemStatus:
+      type: string
+      enum: [PENDING, BLOCKED, EXECUTING, SUCCEEDED, RETRYABLE_FAILED, FAILED, STALE]
+    SupportQueueScopeSummary:
+      type: object
+      additionalProperties: false
+      required: [owningOrganizationId, serviceCatalogItemIds, scopeHash]
+      properties:
+        owningOrganizationId: { type: string, maxLength: 128 }
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        serviceSystemCodes:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        configurationItemCount:
+          type: integer
+          minimum: 0
+          description: 仅返回当前管理范围内计数，不返回无权 CI 清单。
+        scopeHash:
+          type: string
+          maxLength: 128
+          description: 服务端对冻结规范化范围生成的摘要，不是授权凭据。
+    SupportQueueMigrationPlanItem:
+      type: object
+      additionalProperties: false
+      required: [itemId, itemType, status, ticketId, sourceTicketVersion, sourceQueueCode, targetQueueCode, attemptCount, retryable]
+      properties:
+        itemId:
+          type: string
+          pattern: '^SQMPI-[A-Za-z0-9_-]{8,64}$'
+        itemType: { $ref: '#/components/schemas/SupportQueueMigrationItemType' }
+        status: { $ref: '#/components/schemas/SupportQueueMigrationItemStatus' }
+        ticketId: { $ref: '#/components/schemas/TicketIdValue' }
+        sourceWorkflowTaskId:
+          type: string
+          maxLength: 128
+        sourceTicketVersion: { type: integer, minimum: 0 }
+        sourceTaskVersion: { type: integer, minimum: 0 }
+        sourceQueueCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        targetQueueCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        attemptCount: { type: integer, minimum: 0 }
+        retryable:
+          type: boolean
+          description: 只有 true 的失败项可由 retry 命令再次处理。
+        resultCode:
+          type: string
+          maxLength: 80
+          description: 脱敏成功/跳过结果码。
+        errorCode:
+          type: string
+          maxLength: 80
+          description: 脱敏失败/阻断码，不返回无权对象正文或人员身份。
+        resultResourceId:
+          type: string
+          maxLength: 128
+          description: 成功迁移事件或结果引用；重放返回同一引用。
+        handoverTaskId:
+          type: string
+          maxLength: 128
+          description: IN_PROGRESS_HANDOVER 成功创建的唯一交接待办引用；不代表交接已确认。
+    SupportQueueMigrationPlan:
+      type: object
+      additionalProperties: false
+      required: [id, sourceQueueCode, sourceQueueVersion, targetQueueCode, targetQueueVersion, scopeSummary, status, planVersion, listSnapshotAt, checklistHash, unclaimedItemCount, inProgressHandoverCount, blockedItemCount, createdByIamUserId, createdAt]
+      properties:
+        id: { type: string, pattern: '^SQMP-[A-Za-z0-9_-]{8,64}$' }
+        sourceQueueCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        sourceQueueVersion: { type: integer, minimum: 0 }
+        targetQueueCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        targetQueueVersion: { type: integer, minimum: 0 }
+        scopeSummary: { $ref: '#/components/schemas/SupportQueueScopeSummary' }
+        status: { $ref: '#/components/schemas/SupportQueueMigrationPlanStatus' }
+        planVersion: { type: integer, minimum: 0 }
+        listSnapshotAt: { type: string, format: date-time }
+        checklistHash:
+          type: string
+          maxLength: 128
+          description: 审批与执行绑定的冻结逐项清单摘要。
+        unclaimedItemCount: { type: integer, minimum: 0 }
+        inProgressHandoverCount: { type: integer, minimum: 0 }
+        blockedItemCount: { type: integer, minimum: 0 }
+        succeededItemCount: { type: integer, minimum: 0 }
+        retryableFailedItemCount: { type: integer, minimum: 0 }
+        failedItemCount: { type: integer, minimum: 0 }
+        createdByIamUserId: { type: string, maxLength: 128 }
+        approvedByIamUserId: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 500 }
+        createdAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time }
+        executionStartedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+        auditEventId: { type: string, maxLength: 128 }
+    SupportQueueMigrationPlanView:
+      type: object
+      additionalProperties: false
+      required: [plan, items, page, pageSize, total]
+      properties:
+        plan: { $ref: '#/components/schemas/SupportQueueMigrationPlan' }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupportQueueMigrationPlanItem' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, minimum: 0 }
+    SupportQueueMigrationPlanCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceQueueExpectedVersion, targetQueueCode, targetQueueExpectedVersion, reason]
+      properties:
+        sourceQueueExpectedVersion: { type: integer, minimum: 0 }
+        targetQueueCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        targetQueueExpectedVersion: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+        effectiveAt: { type: string, format: date-time }
+    SupportQueueMigrationPlanCommandRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedPlanVersion, reason]
+      properties:
+        expectedPlanVersion: { type: integer, minimum: 0 }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    SupportQueueIdempotencyExecutionStatus:
+      type: string
+      enum: [RECEIVED, IN_PROGRESS, COMPLETED, RETRYABLE_FAILED, FAILED, LEGACY_RESULT_ONLY, RECONCILIATION_REQUIRED, FAILED_FINAL]
+    SupportQueueIdempotencyRetryAdvice:
+      type: string
+      description: |
+        WAIT_AND_QUERY=继续用原 key 查询；REPLAY_SAME_REQUEST/RETRY_SAME_KEY=仅按服务端明确建议用原 key；USE_EXISTING_RESULT=使用已验证结果；
+        REQUEST_MANUAL_RECONCILIATION=不得重试并提交人工对账；FINAL_FAILURE_NEW_INTENT_REQUIRES_CONFIRMATION=原意图最终失败，只有用户明确新业务意图后才可新 key；
+        DO_NOT_RETRY_CONTACT_ADMIN=关闭式停止并联系有权人员。任何值都不允许客户端自动换 key 重试不确定结果。
+      enum: [WAIT_AND_QUERY, REPLAY_SAME_REQUEST, RETRY_SAME_KEY, USE_EXISTING_RESULT, REQUEST_MANUAL_RECONCILIATION, FINAL_FAILURE_NEW_INTENT_REQUIRES_CONFIRMATION, DO_NOT_RETRY_CONTACT_ADMIN]
+    SupportQueueIdempotencyStatus:
+      type: object
+      additionalProperties: false
+      description: 客户端安全状态摘要；服务端内部 HMAC、规范化请求指纹、keyVersion、租约令牌和执行节点标识不得加入该响应。
+      required: [status, operation, resourceType, receivedAt, retryAdvice]
+      properties:
+        status: { $ref: '#/components/schemas/SupportQueueIdempotencyExecutionStatus' }
+        operation:
+          type: string
+          maxLength: 100
+          description: 规范化队列命令名称，例如 CREATE_QUEUE、EXECUTE_MIGRATION_PLAN。
+        resourceType:
+          type: string
+          enum: [SUPPORT_QUEUE, SUPPORT_QUEUE_MIGRATION_PLAN]
+        resourceId:
+          type: string
+          maxLength: 128
+          description: 首次请求已安全确定的队列编码或计划 ID；尚未创建时可省略。
+        receivedAt: { type: string, format: date-time }
+        heartbeatAt: { type: string, format: date-time }
+        leaseExpiresAt:
+          type: string
+          format: date-time
+          description: 仅用于客户端决定继续等待/查询，不授予接管或执行权。
+        resultResourceRef:
+          type: string
+          maxLength: 256
+          description: 已完成业务结果的服务端安全引用；不包含内部存储路径、租约或密钥材料。
+        retryAdvice: { $ref: '#/components/schemas/SupportQueueIdempotencyRetryAdvice' }
+        errorCode:
+          type: string
+          maxLength: 80
+          description: 脱敏错误码；不返回 HMAC、指纹、keyVersion、节点或请求正文。
+    SupportQueueIdempotencyReconciliationDecision:
+      type: string
+      enum: [RESULT_CONFIRMED, FINAL_FAILURE]
+    SupportQueueIdempotencyReconciliationStatus:
+      type: string
+      enum: [PENDING_REVIEW, APPROVED, REJECTED]
+    SupportQueueIdempotencyReconciliationRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliationDecision' }
+        reason: { type: string, minLength: 10, maxLength: 1000 }
+        resultResourceRef:
+          type: string
+          maxLength: 256
+          description: RESULT_CONFIRMED 时提交的受控既有结果引用；服务端必须重新验证主体、资源、自然键和审计关联。
+        evidenceReferences:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          description: 仅接受服务端受管审计/业务证据 ID，不接受 URL、路径、正文或客户端 HMAC。
+          items: { type: string, maxLength: 128 }
+    SupportQueueIdempotencyReconciliationApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties:
+        decision:
+          type: string
+          enum: [APPROVE, REJECT]
+        reason: { type: string, minLength: 10, maxLength: 1000 }
+    SupportQueueIdempotencyReconciliation:
+      type: object
+      additionalProperties: false
+      required: [id, status, proposedDecision, applicantIamUserId, reason, version, createdAt, resultingIdempotencyStatus]
+      properties:
+        id: { type: string, pattern: '^SQIR-[A-Za-z0-9_-]{8,64}$' }
+        status: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliationStatus' }
+        proposedDecision: { $ref: '#/components/schemas/SupportQueueIdempotencyReconciliationDecision' }
+        applicantIamUserId: { type: string, maxLength: 128 }
+        approverIamUserId: { type: string, maxLength: 128 }
+        reason: { type: string, maxLength: 1000 }
+        decisionReason: { type: string, maxLength: 1000 }
+        resultResourceRef:
+          type: string
+          maxLength: 256
+          description: 仅 RESULT_CONFIRMED 且证据验证通过时返回的安全引用。
+        version: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        resultingIdempotencyStatus:
+          type: string
+          enum: [LEGACY_RESULT_ONLY, RECONCILIATION_REQUIRED, FAILED_FINAL]
+        auditEventId: { type: string, maxLength: 128 }
     TicketAction:
       type: string
       description: 生命周期动作；动作后的状态、优先级、队列、审批和 SLA 均由服务端规则计算。
@@ -4291,8 +5684,8 @@ components:
       enum: [DRAFT, PENDING_REVIEW, PUBLISHED, RETIRED, REJECTED]
     FormFieldType:
       type: string
-      description: 不支持可执行脚本、HTML、任意 SQL/表达式或客户端定义组件。附件、人员、CI 等特殊字段须使用各自受控契约，不能借动态表单绕过授权。
-      enum: [TEXT, TEXTAREA, NUMBER, DATE, DATETIME, BOOLEAN, SINGLE_SELECT, MULTI_SELECT, RADIO, CHECKBOX_GROUP, ERROR_CODE, TAGS]
+      description: 不支持可执行脚本、HTML、任意 SQL/表达式或客户端定义组件。RICH_TEXT 仅允许服务端白名单清洗、受管图片与附件引用；CI_REFERENCE 必须走受控 CMDB/配置项选择器，不能借动态表单绕过授权。
+      enum: [TEXT, LONG_TEXT, SINGLE_SELECT, MULTI_SELECT, DATETIME, BOOLEAN, TAGS, CI_REFERENCE, RICH_TEXT]
     FieldSensitivity:
       type: string
       enum: [INTERNAL, SENSITIVE]
@@ -4366,6 +5759,10 @@ components:
           type: string
           maxLength: 300
           description: 纯文本帮助；不含令牌、连接串、内部路由和 HTML。
+        defaultValue:
+          type: string
+          maxLength: 4000
+          description: 非敏感字段的受控默认值；服务端按字段类型与字典重新校验，不能作为状态、人员、流程或权限的默认值。
         type:
           $ref: '#/components/schemas/FormFieldType'
         required:
@@ -5363,14 +6760,14 @@ components:
           maxLength: 128
     KnowledgeDocumentLifecycleState:
       type: string
-      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, SUPERSEDED, REJECTED, ARCHIVED]
+      enum: [DRAFT, PENDING_REVIEW, PUBLISHED, SUPERSEDED, REJECTED, ARCHIVED, MIGRATION_PENDING]
     KnowledgeImportState:
       type: string
       enum: [RECEIVED, SCANNING, QUARANTINED, REJECTED, PARSING, DRAFT_CREATED, FAILED]
     KnowledgeArticleSummary:
       type: object
       additionalProperties: false
-      required: [id, title, version, publishedAt, tags]
+      required: [id, title, owningOrganizationId, serviceCatalogItemIds, version, publishedAt, tags]
       properties:
         id:
           type: string
@@ -5378,6 +6775,16 @@ components:
         title:
           type: string
           maxLength: 200
+        owningOrganizationId:
+          type: string
+          maxLength: 128
+          description: 文档冻结归属组织；普通响应只返回等于当前 IAM 组织的已发布内容。
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
         summary:
           type: string
           maxLength: 500
@@ -5414,7 +6821,7 @@ components:
     KnowledgeArticle:
       type: object
       additionalProperties: false
-      required: [id, title, version, lifecycleState, contentFormat, content, publishedAt, tags]
+      required: [id, title, owningOrganizationId, serviceCatalogItemIds, version, lifecycleState, contentFormat, content, publishedAt, tags]
       properties:
         id:
           type: string
@@ -5422,6 +6829,15 @@ components:
         title:
           type: string
           maxLength: 200
+        owningOrganizationId:
+          type: string
+          maxLength: 128
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
         version:
           type: integer
           minimum: 1
@@ -5446,6 +6862,8 @@ components:
         relatedServiceCatalogItemIds:
           type: array
           maxItems: 20
+          deprecated: true
+          description: 兼容旧客户端的别名；新客户端使用 serviceCatalogItemIds，服务端响应两者时内容必须一致。
           items:
             type: string
             maxLength: 64
@@ -5458,7 +6876,7 @@ components:
     KnowledgeImportRequest:
       type: object
       additionalProperties: false
-      required: [file, title, targetOrganizationIamId]
+      required: [file, title, serviceCatalogItemIds]
       x-server-enforced:
         - knowledge-management-scope-check
         - server-side-content-signature-and-allowlist-validation
@@ -5477,10 +6895,13 @@ components:
         targetOrganizationIamId:
           type: string
           maxLength: 128
-          description: 目标组织只作服务端管理范围校验；不是可借此扩大可见范围的授权声明。
+          deprecated: true
+          description: 兼容旧客户端的废弃输入，服务端必须忽略且不得用于归属；owningOrganizationId 只取当前 IAM 主组织。
         serviceCatalogItemIds:
           type: array
+          minItems: 1
           maxItems: 20
+          uniqueItems: true
           items:
             type: string
             maxLength: 64
@@ -5492,13 +6913,23 @@ components:
     KnowledgeImportJob:
       type: object
       additionalProperties: false
-      required: [id, state, requestedAt, requester, auditEventId]
+      required: [id, state, owningOrganizationId, serviceCatalogItemIds, requestedAt, requester, auditEventId]
       properties:
         id:
           type: string
           pattern: '^KBIMP-[A-Za-z0-9_-]{8,64}$'
         state:
           $ref: '#/components/schemas/KnowledgeImportState'
+        owningOrganizationId:
+          type: string
+          maxLength: 128
+          description: 服务端从任务创建者当前 IAM 主组织固化。
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
         reasonCode:
           type: string
           maxLength: 80
@@ -5521,13 +6952,22 @@ components:
     KnowledgeArticleVersion:
       type: object
       additionalProperties: false
-      required: [version, lifecycleState, createdAt, creator, sourceScanState, auditEventId]
+      required: [version, lifecycleState, owningOrganizationId, serviceCatalogItemIds, createdAt, creator, sourceScanState, auditEventId]
       properties:
         version:
           type: integer
           minimum: 1
         lifecycleState:
           $ref: '#/components/schemas/KnowledgeDocumentLifecycleState'
+        owningOrganizationId:
+          type: string
+          maxLength: 128
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
         createdAt:
           type: string
           format: date-time
@@ -5551,6 +6991,41 @@ components:
         total:
           type: integer
           minimum: 0
+    KnowledgeReviewQueueItem:
+      type: object
+      additionalProperties: false
+      required: [articleId, version, title, owningOrganizationId, serviceCatalogItemIds, requestedAt, reasonCode]
+      properties:
+        articleId: { type: string, pattern: '^KB-[A-Za-z0-9_-]{8,64}$' }
+        version: { type: integer, minimum: 1 }
+        title: { type: string, maxLength: 200 }
+        owningOrganizationId: { type: string, maxLength: 128 }
+        serviceCatalogItemIds:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        requestedAt: { type: string, format: date-time }
+        reasonCode: { type: string, maxLength: 80 }
+        candidateApprovalCount:
+          type: integer
+          minimum: 0
+          description: 仅返回满足冻结策略的聚合数，不返回完整候选审核人身份。
+    KnowledgeReviewQueuePage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/KnowledgeReviewQueueItem' }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        total:
+          type: integer
+          minimum: 0
+          description: 仅统计当前角色、DATA_SCOPE 与目录范围内待审核项。
     KnowledgePublicationRequest:
       type: object
       additionalProperties: false
@@ -6008,9 +7483,65 @@ components:
           type: string
           minLength: 5
           maxLength: 1000
+    LifecycleActionApprovalSummary:
+      type: object
+      additionalProperties: false
+      required: [id, action, applicantIamUserId, reason, status, processKey, processVersion, candidateApprovalCount, createdAt]
+      x-server-enforced:
+        - request-time-policy-candidates-intersect-active-iam-and-data-scope-then-freeze
+        - inbox-time-frozen-candidates-intersect-active-task-and-current-data-scope
+        - decision-time-frozen-candidates-intersect-assignee-current-role-and-data-scope
+        - frozen-candidate-identities-never-returned
+        - source-ticket-and-workflow-version-revalidated-before-execution
+        - no-browser-execution-endpoint
+      properties:
+        id:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [HOLD, ESCALATE, CANCEL, REOPEN]
+        applicantIamUserId:
+          type: string
+          maxLength: 128
+        reason:
+          type: string
+          maxLength: 1000
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, REJECTED, EXECUTED, STALE]
+        processKey:
+          type: string
+          maxLength: 128
+        processVersion:
+          type: integer
+          minimum: 1
+        candidateApprovalCount:
+          type: integer
+          minimum: 0
+        approverIamUserId:
+          type: string
+          maxLength: 128
+          nullable: true
+        decisionReason:
+          type: string
+          maxLength: 1000
+          nullable: true
+        decidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        executedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
     ApprovalTaskInbox:
       type: object
       additionalProperties: false
+      description: 只包含冻结候选集、当前活动任务受让关系与当前 DATA_SCOPE 三者均命中的任务；不返回完整候选身份或全局总数。
       required: [items, page, pageSize]
       properties:
         items:
@@ -6360,7 +7891,12 @@ components:
       type: object
       additionalProperties: false
       required: [processKey, processDefinitionId, processVersion, candidateRoles, decisionMode, timeoutPolicyVersion, escalationPolicyVersion, capturedAt]
-      description: 创建审批申请时冻结的流程定义、角色和审批策略证据；具体 IAM 审批人 ID 只保存在服务端审计快照，不通过工单详情接口返回。后续发布、角色映射或超时规则变更不改写它。历史空集合记录仅可审计展示，服务端禁止继续审批。
+      description: 创建审批申请时冻结的流程定义、角色和审批策略证据。具体 IAM 候选集由策略候选、活动 IAM 和申请时对象 DATA_SCOPE 取交集并剔除申请人后冻结，只保存在服务端审计快照，不通过工单详情接口返回。待办读取和决策分别再与当前任务受让关系及当前角色/DATA_SCOPE 取交集；后续发布不改写冻结证据，空集合记录禁止继续审批。
+      x-server-enforced:
+        - request-time-freeze-after-policy-iam-data-scope-intersection
+        - inbox-time-current-task-and-scope-recheck
+        - decision-time-current-role-scope-assignee-and-self-review-recheck
+        - complete-frozen-candidate-identities-never-returned
       properties:
         processKey:
           type: string
@@ -6521,7 +8057,7 @@ components:
     Ticket:
       type: object
       additionalProperties: false
-      required: [id, type, status, priority, title, requester, serviceCatalogItem, createdAt, version]
+      required: [id, type, status, priority, title, requester, serviceCatalogItem, serviceCatalogFormVersion, createdAt, version]
       properties:
         id:
           type: string
@@ -6552,6 +8088,10 @@ components:
           $ref: '#/components/schemas/IdentitySnapshot'
         serviceCatalogItem:
           $ref: '#/components/schemas/ServiceCatalogSummary'
+        serviceCatalogFormVersion:
+          type: integer
+          minimum: 1
+          description: 创建时服务器验证并固化的实际已发布表单版本；目录后续变更不得改写该历史快照。
         tags:
           type: array
           items:
@@ -6668,7 +8208,7 @@ components:
     TicketPage:
       type: object
       additionalProperties: false
-      required: [items, page, pageSize, total]
+      required: [items, page, pageSize, total, hasMore, snapshotAt]
       properties:
         items:
           type: array
@@ -6683,6 +8223,18 @@ components:
         total:
           type: integer
           minimum: 0
+          description: 仅统计当前授权范围和相同筛选下的结果；不得先计算集团全局总数再扣减。
+        nextCursor:
+          type: string
+          nullable: true
+          maxLength: 2048
+          description: 下一页不透明游标；没有更多数据时为空。
+        hasMore:
+          type: boolean
+        snapshotAt:
+          type: string
+          format: date-time
+          description: 首次查询固化的创建时间上界；刷新筛选条件时建立新快照。
     SlaConfigurationLifecycleState:
       type: string
       enum: [DRAFT, PENDING_REVIEW, PUBLISHED, REJECTED, SUPERSEDED]
@@ -7377,7 +8929,8 @@ components:
             properties:
               scopeType:
                 type: string
-                enum: [ORGANIZATION, SERVICE, QUEUE, CONFIGURATION_ITEM]
+                description: QUEUE 在持久化队列快照交付前不接受新授权；SERVICE 仅兼容历史服务目录编码。
+                enum: [ORGANIZATION, SERVICE, SERVICE_CATALOG, SERVICE_SYSTEM, CONFIGURATION_ITEM]
               scopeId:
                 type: string
                 maxLength: 128

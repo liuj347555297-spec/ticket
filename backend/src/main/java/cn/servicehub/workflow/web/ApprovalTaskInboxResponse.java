@@ -16,18 +16,16 @@ public record ApprovalTaskInboxResponse(List<Item> items, int page, int pageSize
         return new ApprovalTaskInboxResponse(inbox.items().stream().map(Item::from).toList(), inbox.page(), inbox.pageSize());
     }
 
-    public record Item(String approvalRequestId, String ticketId, String ticketTitle, TicketType ticketType, TicketStatus ticketStatus,
+    public record Item(String taskType, String requestId, String approvalRequestId, String ticketId, String ticketTitle, TicketType ticketType, TicketStatus ticketStatus,
                 TicketPriority ticketPriority, ServiceCatalogSummary serviceCatalogItem, IdentitySnapshot requester,
-                String applicantIamUserId, String sourceNode, String targetNode, String reason, Instant requestedAt,
-                Instant engineTaskCreatedAt, String decisionMode, int candidateApprovalCount, int requiredApprovalCount,
-                boolean canDecide, String disabledReason) {
+                String applicantIamUserId, String sourceNode, String targetNode, String actionCode, String summary,
+                Instant requestedAt, Instant engineTaskCreatedAt, String decisionMode, int candidateApprovalCount,
+                int requiredApprovalCount, boolean canDecide, String disabledReason) {
         static Item from(ApprovalTaskInboxItem item) {
-            var request = item.request();
             var ticket = item.ticket();
-            return new Item(request.id(), ticket.id(), ticket.title(), ticket.type(), ticket.status(), ticket.priority(),
-                ticket.serviceCatalogItem(), ticket.requester(), request.applicantIamUserId(), request.sourceNode(), request.targetNode(),
-                request.reason(), request.createdAt(), item.engineTaskCreatedAt(), item.decisionMode(), item.candidateApprovalCount(),
-                item.requiredApprovalCount(), item.canDecide(), item.disabledReason());
+            return new Item(item.taskType(), item.requestId(), item.requestId(), item.ticketId(), ticket.title(), ticket.type(), ticket.status(), ticket.priority(),
+                ticket.serviceCatalogItem(), ticket.requester(), item.applicantIamUserId(), item.sourceNode(), item.targetNode(), item.actionCode(), item.summary(),
+                item.requestedAt(), item.engineTaskCreatedAt(), item.decisionMode(), item.candidateApprovalCount(), item.requiredApprovalCount(), item.canDecide(), item.disabledReason());
         }
     }
 }

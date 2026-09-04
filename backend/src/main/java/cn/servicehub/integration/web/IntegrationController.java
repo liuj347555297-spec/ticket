@@ -40,17 +40,17 @@ public class IntegrationController {
     @PostMapping(value="/integrations/alerts/{sourceCode}", consumes="application/json")
     @ResponseStatus(HttpStatus.ACCEPTED)
     AlertReceipt receiveAlert(@PathVariable @Pattern(regexp="[A-Z0-9_-]{2,40}") String sourceCode,
-                              @RequestHeader("X-Integration-Timestamp") String timestamp,
-                              @RequestHeader("X-Integration-Nonce") String nonce,
-                              @RequestHeader("X-Integration-Signature") String signature,
+                              @RequestHeader(value="X-Integration-Timestamp", required=false) String timestamp,
+                              @RequestHeader(value="X-Integration-Nonce", required=false) String nonce,
+                              @RequestHeader(value="X-Integration-Signature", required=false) String signature,
                               @RequestBody String body, HttpServletRequest request) {
         var received=service.receiveAlert(sourceCode,request.getRemoteAddr(),timestamp,nonce,signature,body);
         var alert=received.alert();
-        return new AlertReceipt(alert.id(),alert.status(),received.idempotencyStatus(),alert.ticketId());
+        return new AlertReceipt(alert.id(),alert.status(),received.idempotencyStatus(),received.recommendation(),alert.ticketId());
     }
     public record ConfigurationItemPage(List<ConfigurationItem> items) { }
     public record DeepLinkRequest(@NotBlank @Pattern(regexp="[A-Z0-9_-]{2,40}") String systemCode,
                                   @NotBlank @Pattern(regexp="CONFIGURATION_ITEM|ALERT|TRACE") String resourceType,
                                   @NotBlank @Pattern(regexp="[A-Za-z0-9._:-]{1,160}") String resourceId) { }
-    public record AlertReceipt(String alertId,String status,String idempotencyStatus,String ticketId) { }
+    public record AlertReceipt(String alertId,String status,String idempotencyStatus,String recommendation,String ticketId) { }
 }

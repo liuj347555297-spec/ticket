@@ -12,5 +12,9 @@ public record WorkflowOverview(WorkflowInstance instance, List<WorkflowTask> tas
                                List<WorkflowAvailableAction> availableActions, List<WorkflowEvent> events,
                                List<WorkflowParticipant> participants, List<cn.servicehub.workflow.domain.ControlledJumpRequest> approvalRequests,
                                List<cn.servicehub.workflow.domain.ApprovalDecisionRecord> approvalDecisions,
-                               List<ControlledJumpAvailableAction> controlledJumpActions) {
+                               List<ControlledJumpAvailableAction> controlledJumpActions,
+                               List<cn.servicehub.workflow.domain.HandoverRequest> handoverRequests,
+                               List<cn.servicehub.workflow.domain.CoHandlerRequest> coHandlerRequests,
+                               List<LifecycleActionApprovalSummary> lifecycleApprovalRequests,
+                               List<cn.servicehub.workflow.routing.NodeAssignmentSnapshot> assignmentSnapshots) {
 }

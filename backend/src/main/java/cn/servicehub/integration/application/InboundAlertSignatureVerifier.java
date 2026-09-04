@@ -19,7 +19,7 @@ public class InboundAlertSignatureVerifier {
     public InboundAlertSignatureVerifier(SecretResolverPort secrets, ReplayProtectionPort replay) { this.secrets = secrets; this.replay = replay; }
     public void verify(ExternalConnectionConfiguration config, String remoteAddress, String timestamp, String nonce,
                        String signature, String body) {
-        if (!config.enabled() || config.secretRef() == null || config.secretRef().isBlank() || !config.allowedCallbackSourceIps().contains(remoteAddress)) throw new IntegrationSecurityException();
+        if (!config.supportsSignedAlertCallback() || !isAllowedRemoteAddress(config, remoteAddress)) throw new IntegrationSecurityException();
         Instant at;
         try { at = Instant.parse(timestamp); } catch (RuntimeException e) { throw new IntegrationSecurityException(); }
         if (Duration.between(at, Instant.now()).abs().compareTo(CLOCK_SKEW) > 0 || nonce == null || !nonce.matches("[A-Za-z0-9_-]{16,128}") || signature == null || !signature.matches("[A-Fa-f0-9]{64}")) throw new IntegrationSecurityException();
@@ -42,4 +42,18 @@ public class InboundAlertSignatureVerifier {
         return result;
     }
     private static byte[] hex(String value) { byte[] b = new byte[value.length() / 2]; for (int i=0; i<b.length; i++) b[i]=(byte) Integer.parseInt(value.substring(i*2,i*2+2),16); return b; }
+
+    /** Servlet remote address is used directly; forwarding headers are never a callback trust source. */
+    private static boolean isAllowedRemoteAddress(ExternalConnectionConfiguration config, String remoteAddress) {
+        if (remoteAddress == null || remoteAddress.isBlank()) return false;
+        try {
+            String canonical = java.net.InetAddress.getByName(remoteAddress).getHostAddress();
+            return config.allowedCallbackSourceIps().stream().anyMatch(allowed -> {
+                try { return java.net.InetAddress.getByName(allowed).getHostAddress().equals(canonical); }
+                catch (java.net.UnknownHostException ignored) { return false; }
+            });
+        } catch (java.net.UnknownHostException ignored) {
+            return false;
+        }
+    }
 }

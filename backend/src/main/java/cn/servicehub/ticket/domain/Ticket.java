@@ -12,6 +12,7 @@ public record Ticket(String id, TicketType type, TicketStatus status, TicketPrio
                      String title, String description, TicketDescriptionFormat descriptionFormat, String descriptionHtml, Map<String, Object> structuredFields,
                      List<TicketTag> tags, List<String> relatedConfigurationItemIds,
                      IdentitySnapshot requester, ServiceCatalogSummary serviceCatalogItem,
+                     int serviceCatalogFormVersion,
                      Instant createdAt, Instant updatedAt, long version) {
     public Ticket {
         structuredFields = structuredFields == null ? Map.of() : Map.copyOf(structuredFields);
@@ -24,8 +25,10 @@ public record Ticket(String id, TicketType type, TicketStatus status, TicketPrio
             return true;
         }
         String normalized = keyword.toLowerCase(java.util.Locale.ROOT);
-        return title.toLowerCase(java.util.Locale.ROOT).contains(normalized)
+        return id.toLowerCase(java.util.Locale.ROOT).contains(normalized)
+            || title.toLowerCase(java.util.Locale.ROOT).contains(normalized)
             || description.toLowerCase(java.util.Locale.ROOT).contains(normalized)
+            || serviceCatalogItem.name().toLowerCase(java.util.Locale.ROOT).contains(normalized)
             || tags.stream().anyMatch(tag -> tag.name().toLowerCase(java.util.Locale.ROOT).contains(normalized));
     }
 }

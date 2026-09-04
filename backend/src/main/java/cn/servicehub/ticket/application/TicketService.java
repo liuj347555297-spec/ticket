@@ -12,6 +12,7 @@ import cn.servicehub.security.CurrentUserProvider;
 import cn.servicehub.security.ObjectAction;
 import cn.servicehub.security.ObjectAuthorizationRequest;
 import cn.servicehub.security.ObjectAuthorizationService;
+import cn.servicehub.security.TicketAccessScopeResolver;
 import cn.servicehub.ticket.domain.CreateTicketResult;
 import cn.servicehub.ticket.domain.ServiceCatalogSummary;
 import cn.servicehub.ticket.domain.Ticket;
@@ -22,9 +23,9 @@ import cn.servicehub.ticket.domain.TicketRepository;
 import cn.servicehub.ticket.domain.TicketQueue;
 import cn.servicehub.ticket.domain.TicketStatus;
 import cn.servicehub.ticket.domain.TicketType;
-import cn.servicehub.workflow.domain.TicketWorkflowRepository;
-import cn.servicehub.sla.domain.TicketSlaTargetRepository;
 import cn.servicehub.workflow.application.TicketWorkflowService;
+import cn.servicehub.servicesystem.application.ServiceSystemRegistryService;
+import cn.servicehub.workflow.team.SupportQueueEligibilityService;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -46,19 +47,20 @@ public class TicketService {
     private final NotificationService notificationService;
     private final SlaService slaService;
     private final IntegrationService integrationService;
-    private final TicketWorkflowRepository workflowRepository;
-    private final TicketSlaTargetRepository slaTargets;
-    private final cn.servicehub.notification.domain.NotificationRepository notificationRepository;
     private final TicketDescriptionSanitizer descriptionSanitizer;
+    private final ServiceSystemRegistryService serviceSystems;
+    private final TicketAccessScopeResolver ticketScopes;
+    private final TicketCursorCodec cursors;
+    private final SupportQueueEligibilityService supportQueues;
     private final Clock clock = Clock.systemUTC();
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
                          ObjectAuthorizationService authorizationService, IdentitySnapshotResolver identitySnapshotResolver,
                          AuditEventPublisher auditEventPublisher, ServiceCatalogService serviceCatalogService,
                          TicketWorkflowService workflowService, NotificationService notificationService, SlaService slaService,
-                         IntegrationService integrationService, TicketWorkflowRepository workflowRepository,
-                         TicketSlaTargetRepository slaTargets, cn.servicehub.notification.domain.NotificationRepository notificationRepository,
-                         TicketDescriptionSanitizer descriptionSanitizer) {
+                         IntegrationService integrationService, TicketDescriptionSanitizer descriptionSanitizer,
+                         ServiceSystemRegistryService serviceSystems, TicketAccessScopeResolver ticketScopes,
+                         TicketCursorCodec cursors,SupportQueueEligibilityService supportQueues) {
         this.ticketRepository = ticketRepository;
         this.currentUserProvider = currentUserProvider;
         this.authorizationService = authorizationService;
@@ -69,10 +71,11 @@ public class TicketService {
         this.notificationService = notificationService;
         this.slaService = slaService;
         this.integrationService = integrationService;
-        this.workflowRepository = workflowRepository;
-        this.slaTargets = slaTargets;
-        this.notificationRepository = notificationRepository;
         this.descriptionSanitizer = descriptionSanitizer;
+        this.serviceSystems = serviceSystems;
+        this.ticketScopes = ticketScopes;
+        this.cursors = cursors;
+        this.supportQueues=supportQueues;
     }
 
     @Transactional
@@ -81,22 +84,29 @@ public class TicketService {
         authorizationService.requireAuthorized(user, new ObjectAuthorizationRequest("ticket", "NEW", ObjectAction.CREATE,
             Map.of("serviceCatalogItemId", command.serviceCatalogItemId())));
         ServiceCatalogItem catalogItem = serviceCatalogService.validateTicketInput(command);
-        integrationService.validateConfigurationItemIds(command.relatedConfigurationItemIds());
+        ServiceSystemRegistryService.ResolvedTicketSelection serviceSystemSelection = serviceSystems.validateForTicket(
+            command.serviceSystemCode(), command.serviceSystemModuleCode(), catalogItem.id());
+        Map<String, Object> structuredFields = serviceCatalogService.normalizeStructuredFields(command);
+        List<String> configurationItemIds = serviceCatalogService.configurationItemReferences(command, structuredFields);
+        cn.servicehub.ticket.domain.IdentitySnapshot requesterSnapshot = identitySnapshotResolver.snapshotFor(user);
+        integrationService.validateConfigurationItemIds(configurationItemIds, requesterSnapshot.organizationId());
         CreateTicketResult result = ticketRepository.createIdempotently(user.iamUserId(), idempotencyKey, command.fingerprint(), () -> {
             var now = clock.instant();
             Ticket ticket = new Ticket(nextTicketId(now), command.type(), TicketStatus.SUBMITTED, TicketPriority.P3,
-                command.title(), command.description(), command.descriptionFormat(), command.descriptionHtml(), command.structuredFields(), command.tags(), command.relatedConfigurationItemIds(),
-                identitySnapshotResolver.snapshotFor(user), new ServiceCatalogSummary(catalogItem.id(), catalogItem.name()), now, now, 0);
+                command.title(), command.description(), command.descriptionFormat(), command.descriptionHtml(), structuredFields, command.tags(), configurationItemIds,
+                requesterSnapshot, new ServiceCatalogSummary(catalogItem.id(), catalogItem.name()), command.serviceCatalogFormVersion(), now, now, 0);
             return ticket;
         });
         if (!result.replayed()) {
             Ticket ticket = result.ticket();
+            serviceSystems.captureTicketSnapshot(ticket.id(), serviceSystemSelection);
             integrationService.associateTicketConfigurationItems(ticket);
-            workflowService.startTicket(ticket, user);
-            slaService.onTicketCreated(ticket);
-            notificationService.ticketCreated(ticket);
+            Ticket routed = workflowService.startTicket(ticket, user);
+            slaService.onTicketCreated(routed);
+            notificationService.ticketCreated(routed);
             auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_CREATED", "ticket", ticket.id(),
-                Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id())));
+                Map.of("type", ticket.type().name(), "catalogItemId", ticket.serviceCatalogItem().id(), "catalogFormVersion", String.valueOf(ticket.serviceCatalogFormVersion()))));
+            return new CreateTicketResult(routed, false);
         }
         return result;
     }
@@ -127,50 +137,46 @@ public class TicketService {
     }
 
     public TicketPage list(int page, int pageSize, TicketStatus status, TicketType type, String keyword, TicketQueue queue) {
+        return list(page, pageSize, status, type, null, null, null, null, null, keyword, queue,null, null);
+    }
+
+    public TicketPage list(int requestedPage, int pageSize, TicketStatus status, TicketType type, TicketPriority priority,
+                           String serviceCatalogItemId, String requesterOrganizationId,
+                           java.time.LocalDate createdFrom, java.time.LocalDate createdTo,
+                           String keyword, TicketQueue queue,String teamQueueCode, String cursor) {
         CurrentUser user = currentUserProvider.requireCurrentUser();
+        if(queue!=null&&teamQueueCode!=null)throw new IllegalArgumentException("Personal and team queues are mutually exclusive");
+        if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) throw new IllegalArgumentException("Ticket creation range is invalid");
+        java.time.Instant createdFromInclusive = createdFrom == null ? null : createdFrom.atStartOfDay(ZoneOffset.UTC).toInstant();
+        java.time.Instant createdToExclusive = createdTo == null ? null : createdTo.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
         TicketQueue effectiveQueue = queue == null ? TicketQueue.ALL : queue;
-        java.util.Set<String> queueTicketIds = queueTicketIds(user, effectiveQueue);
-        List<Ticket> readable = ticketRepository.findAll(new TicketQuery(status, type, keyword)).stream()
-            .filter(ticket -> canRead(user, ticket))
-            .filter(ticket -> belongsToQueue(ticket, user, effectiveQueue, queueTicketIds)).toList();
-        int from = Math.min((page - 1) * pageSize, readable.size());
-        int to = Math.min(from + pageSize, readable.size());
-        List<Ticket> items = readable.subList(from, to);
-        auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_LISTED", "ticket", "collection",
-            Map.of("returned", String.valueOf(items.size()), "queue", effectiveQueue.name())));
-        return new TicketPage(items, page, pageSize, readable.size());
-    }
-
-    private java.util.Set<String> queueTicketIds(CurrentUser user, TicketQueue queue) {
-        return switch (queue) {
-            case MY_TODO -> java.util.Set.copyOf(workflowRepository.findTodoTicketIds(user.iamUserId(), user.authorities()));
-            case MY_DONE, TODAY_COMPLETED -> java.util.Set.copyOf(workflowRepository.findCompletedTicketIds(user.iamUserId()));
-            case TO_READ -> java.util.Set.copyOf(notificationRepository.findUnreadTicketIds(user.iamUserId()));
-            case OVERDUE -> java.util.Set.copyOf(slaTargets.findBreachedTicketIds());
-            default -> java.util.Set.of();
-        };
-    }
-
-    private boolean belongsToQueue(Ticket ticket, CurrentUser user, TicketQueue queue, java.util.Set<String> queueTicketIds) {
-        return switch (queue) {
-            case ALL -> true;
-            case MY_REQUESTED -> user.iamUserId().equals(ticket.requester().iamUserId());
-            case DRAFTS -> user.iamUserId().equals(ticket.requester().iamUserId()) && ticket.status() == TicketStatus.DRAFT;
-            case MY_TODO, MY_DONE, TO_READ -> queueTicketIds.contains(ticket.id());
-            case OVERDUE -> queueTicketIds.contains(ticket.id());
-            case TODAY_COMPLETED -> queueTicketIds.contains(ticket.id())
-                && (ticket.status() == TicketStatus.RESOLVED || ticket.status() == TicketStatus.CLOSED)
-                && java.time.LocalDate.ofInstant(ticket.updatedAt(), ZoneOffset.UTC).equals(java.time.LocalDate.now(ZoneOffset.UTC));
-        };
-    }
-
-    private boolean canRead(CurrentUser user, Ticket ticket) {
-        try {
-            requireRead(user, ticket);
-            return true;
-        } catch (org.springframework.security.access.AccessDeniedException ignored) {
-            return false;
+        String normalizedCatalog = serviceCatalogItemId == null ? null : serviceCatalogItemId.trim();
+        String normalizedOrganization = requesterOrganizationId == null ? null : requesterOrganizationId.trim();
+        String normalizedKeyword = keyword == null ? null : keyword.trim().replaceAll("[\\t\\r\\n ]+", " ");
+        String filterDigest = cursors.filterDigest(status, type, priority, normalizedCatalog, normalizedOrganization,
+            createdFromInclusive, createdToExclusive, effectiveQueue,teamQueueCode, normalizedKeyword, pageSize);
+        int page; java.time.Instant snapshotAt; java.time.Instant afterCreatedAt = null; String afterId = null;
+        if (cursor == null || cursor.isBlank()) {
+            if (requestedPage != 1) throw new IllegalArgumentException("A cursor is required after the first ticket page");
+            page = 1; snapshotAt = clock.instant();
+        } else {
+            var decoded = cursors.decode(cursor, user, filterDigest, pageSize);
+            page = decoded.page(); snapshotAt = decoded.snapshotAt();
+            afterCreatedAt = decoded.lastCreatedAt(); afterId = decoded.lastId();
         }
+        var personalScope=ticketScopes.resolve(user);var teamScope=teamQueueCode==null?null:supportQueues.listingScope(teamQueueCode,user);
+        var query = new TicketQuery(status, type, priority, normalizedCatalog, normalizedOrganization, createdFromInclusive, createdToExclusive,
+            normalizedKeyword, effectiveQueue,teamQueueCode, personalScope,teamScope,
+            snapshotAt, afterCreatedAt, afterId, pageSize);
+        var slice = ticketRepository.findPage(query);
+        String nextCursor = null;
+        if (slice.hasMore() && !slice.items().isEmpty()) {
+            Ticket last = slice.items().getLast();
+            nextCursor = cursors.encode(user, filterDigest, pageSize, page, snapshotAt, last.createdAt(), last.id());
+        }
+        auditEventPublisher.publish(new AuditEvent(clock.instant(), requestId(), user.iamUserId(), "TICKET_LISTED", "ticket", "collection",
+            Map.of("returned", String.valueOf(slice.items().size()), "queue", effectiveQueue.name(), "page", String.valueOf(page))));
+        return new TicketPage(slice.items(), page, pageSize, slice.total(), nextCursor, slice.hasMore(), snapshotAt);
     }
 
     private void requireRead(CurrentUser user, Ticket ticket) {

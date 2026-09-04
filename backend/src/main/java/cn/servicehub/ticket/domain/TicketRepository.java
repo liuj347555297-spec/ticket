@@ -11,7 +11,11 @@ public interface TicketRepository {
 
     Optional<Ticket> findById(String ticketId);
 
+    /** Development-only compatibility for in-memory operational summaries. Production adapters fail closed. */
+    @Deprecated(forRemoval = true)
     List<Ticket> findAll(TicketQuery query);
+
+    TicketPageSlice findPage(TicketQuery query);
 
     /**
      * Updates only server-derived lifecycle state with compare-and-set semantics. A false result

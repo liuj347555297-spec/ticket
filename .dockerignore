@@ -1,0 +1,12 @@
+.git
+.playwright-cli
+.claude
+tmp
+output
+**/node_modules
+**/target
+**/dist
+*.log
+.env
+.env.*
+*.local

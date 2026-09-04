@@ -1,0 +1,81 @@
+# Single-host, loopback-only acceptance environment. Never expose this local-dev stack to a LAN.
+services:
+  servicehub-mysql:
+    image: ${SERVICEHUB_MYSQL_IMAGE:?Set the imported MySQL image ID or immutable digest}
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SERVICEHUB_TEST_MYSQL_ROOT_PASSWORD:?Required}
+      MYSQL_DATABASE: servicehub
+      MYSQL_USER: servicehub
+      MYSQL_PASSWORD: ${SERVICEHUB_TEST_MYSQL_PASSWORD:?Required}
+    volumes:
+      - servicehub_test_mysql:/var/lib/mysql
+      - ./database-baseline/servicehub-v34-schema.sql:/docker-entrypoint-initdb.d/10-servicehub-v34-schema.sql:ro
+      - ./database-baseline/flowable-7.2.0-mysql-schema.sql:/docker-entrypoint-initdb.d/20-flowable-7.2.0-mysql-schema.sql:ro
+      - ./database-baseline/servicehub-v26-demo-data.sql:/docker-entrypoint-initdb.d/30-servicehub-demo-data.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -u root --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+    networks: [servicehub_test]
+
+  servicehub-backend:
+    image: ${SERVICEHUB_BACKEND_IMAGE:?Set the imported backend image ID or immutable digest}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      servicehub-mysql:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: mysql,local-dev
+      SERVER_PORT: 8080
+      SERVICEHUB_DB_URL: jdbc:mysql://servicehub-mysql:3306/servicehub?useUnicode=true&characterEncoding=utf8&connectionTimeZone=UTC
+      SERVICEHUB_DB_USERNAME: servicehub
+      SERVICEHUB_DB_PASSWORD: ${SERVICEHUB_TEST_MYSQL_PASSWORD:?Required}
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: "true"
+      SPRING_FLYWAY_BASELINE_VERSION: "34"
+      SERVICEHUB_ATTACHMENT_STORAGE_ROOT: /var/lib/servicehub/attachments
+      SERVICEHUB_MULTIPART_TEMP_DIR: /var/lib/servicehub/tmp
+      SERVICEHUB_CLAMAV_ENABLED: "false"
+      SERVICEHUB_SECURITY_ALLOWED_ORIGINS: ${SERVICEHUB_TEST_ORIGIN:-http://127.0.0.1:8088}
+      SERVICEHUB_TICKET_CURSOR_SIGNING_KEY: ${SERVICEHUB_TEST_CURSOR_SIGNING_KEY:?Required, at least 32 bytes}
+      SERVICEHUB_SUPPORT_QUEUE_HMAC_CURRENT_VERSION: v1
+      SERVICEHUB_SUPPORT_QUEUE_HMAC_KEY_RING: ${SERVICEHUB_TEST_HMAC_KEY_RING:?Required, v1= plus at least 32 bytes}
+    volumes:
+      - servicehub_test_attachments:/var/lib/servicehub/attachments
+      - servicehub_test_tmp:/var/lib/servicehub/tmp
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [servicehub_test]
+
+  servicehub-frontend:
+    image: ${SERVICEHUB_FRONTEND_IMAGE:?Set the imported frontend image ID or immutable digest}
+    restart: unless-stopped
+    depends_on: [servicehub-backend]
+    ports:
+      - "127.0.0.1:${SERVICEHUB_TEST_FRONTEND_PORT:-8088}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz | grep -q '^ok$'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [servicehub_test]
+
+volumes:
+  servicehub_test_mysql:
+  servicehub_test_attachments:
+  servicehub_test_tmp:
+
+networks:
+  servicehub_test:
+    internal: true

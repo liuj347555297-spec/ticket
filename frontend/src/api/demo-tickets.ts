@@ -75,20 +75,51 @@ let tickets: Ticket[] = [
 function matches(ticket: Ticket, query: TicketQuery): boolean {
   if (query.status && ticket.status !== query.status) return false
   if (query.type && ticket.type !== query.type) return false
-  if (!query.q) return true
-  const key = query.q.toLocaleLowerCase()
-  return [ticket.id, ticket.title, ticket.serviceCatalogItem.name, ...(ticket.tags?.map((tag) => tag.name) ?? [])]
-    .join(' ')
-    .toLocaleLowerCase()
-    .includes(key)
+  if (query.priority && ticket.priority !== query.priority) return false
+  if (query.serviceCatalog) {
+    const catalogKey = query.serviceCatalog.toLocaleLowerCase()
+    if (!`${ticket.serviceCatalogItem.id} ${ticket.serviceCatalogItem.name}`.toLocaleLowerCase().includes(catalogKey)) return false
+  }
+  if (query.requesterOrganization && !ticket.requester.organizationName.toLocaleLowerCase().includes(query.requesterOrganization.toLocaleLowerCase())) return false
+  const createdAt = ticket.createdAt.slice(0, 10)
+  if (query.createdFrom && createdAt < query.createdFrom) return false
+  if (query.createdTo && createdAt > query.createdTo) return false
+  if (query.q) {
+    const key = query.q.toLocaleLowerCase()
+    return [ticket.id, ticket.title, ticket.serviceCatalogItem.name, ...(ticket.tags?.map((tag) => tag.name) ?? [])]
+      .join(' ')
+      .toLocaleLowerCase()
+      .includes(key)
+  }
+  return true
+}
+
+function demoCursorOffset(cursor: string | undefined): number {
+  if (!cursor?.startsWith('demo-')) return 0
+  const value = Number(cursor.slice(5))
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
 export const demoTicketRepository = {
   list(query: TicketQuery): TicketPage {
-    const page = query.page ?? 1
     const pageSize = query.pageSize ?? 20
-    const filtered = tickets.filter((ticket) => matches(ticket, query))
-    return { items: filtered.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: filtered.length }
+    const offset = query.cursor ? demoCursorOffset(query.cursor) : Math.max(0, ((query.page ?? 1) - 1) * pageSize)
+    const filtered = tickets.filter((ticket) => matches(ticket, query)).sort((left, right) => {
+      const timeOrder = right.createdAt.localeCompare(left.createdAt)
+      return timeOrder || right.id.localeCompare(left.id)
+    })
+    const items = filtered.slice(offset, offset + pageSize)
+    const nextOffset = offset + items.length
+    const hasMore = nextOffset < filtered.length
+    return {
+      items,
+      page: query.page ?? Math.floor(offset / pageSize) + 1,
+      pageSize,
+      total: filtered.length,
+      nextCursor: hasMore ? `demo-${nextOffset}` : undefined,
+      hasMore,
+      snapshotAt: new Date().toISOString(),
+    }
   },
   get(ticketId: string): Ticket {
     const ticket = tickets.find((item) => item.id === ticketId)

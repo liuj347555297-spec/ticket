@@ -13,11 +13,17 @@ import java.util.TreeMap;
 public record TicketCreateCommand(String serviceCatalogItemId, int serviceCatalogFormVersion, TicketType type, String title, String description,
                                   TicketDescriptionFormat descriptionFormat, String descriptionHtml,
                                   Map<String, Object> structuredFields, List<TicketTag> tags,
-                                  List<String> relatedConfigurationItemIds) {
+                                  List<String> relatedConfigurationItemIds, String serviceSystemCode, String serviceSystemModuleCode) {
     public TicketCreateCommand(String serviceCatalogItemId, TicketType type, String title, String description,
                                Map<String, Object> structuredFields, List<TicketTag> tags,
                                List<String> relatedConfigurationItemIds) {
-        this(serviceCatalogItemId, 1, type, title, description, TicketDescriptionFormat.PLAIN_TEXT, null, structuredFields, tags, relatedConfigurationItemIds);
+        this(serviceCatalogItemId, 1, type, title, description, TicketDescriptionFormat.PLAIN_TEXT, null, structuredFields, tags, relatedConfigurationItemIds, null, null);
+    }
+    public TicketCreateCommand(String serviceCatalogItemId, int serviceCatalogFormVersion, TicketType type, String title, String description,
+                               TicketDescriptionFormat descriptionFormat, String descriptionHtml, Map<String, Object> structuredFields,
+                               List<TicketTag> tags, List<String> relatedConfigurationItemIds) {
+        this(serviceCatalogItemId, serviceCatalogFormVersion, type, title, description, descriptionFormat, descriptionHtml,
+            structuredFields, tags, relatedConfigurationItemIds, null, null);
     }
     public TicketCreateCommand {
         structuredFields = structuredFields == null ? Map.of() : Map.copyOf(structuredFields);
@@ -28,7 +34,7 @@ public record TicketCreateCommand(String serviceCatalogItemId, int serviceCatalo
     /** Stable enough for the supported JSON primitives; persistence will retain this with the idempotency record. */
     public String fingerprint() {
         String canonical = serviceCatalogItemId + '\u001f' + serviceCatalogFormVersion + '\u001f' + type + '\u001f' + title + '\u001f' + description + '\u001f' + descriptionFormat + '\u001f' + descriptionHtml + '\u001f'
-            + canonicalValue(new TreeMap<>(structuredFields)) + '\u001f' + tags + '\u001f' + relatedConfigurationItemIds;
+            + canonicalValue(new TreeMap<>(structuredFields)) + '\u001f' + tags + '\u001f' + relatedConfigurationItemIds + '\u001f' + serviceSystemCode + '\u001f' + serviceSystemModuleCode;
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                 .digest(canonical.getBytes(StandardCharsets.UTF_8)));

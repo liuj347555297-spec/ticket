@@ -1,0 +1,1 @@
+package cn.servicehub.workflow.team;import java.util.Optional;public interface SupportQueueReconciliationRepository{void create(SupportQueueReconciliationRequest r);Optional<SupportQueueReconciliationRequest>find(String id);boolean approve(SupportQueueReconciliationRequest r,long expectedVersion);}

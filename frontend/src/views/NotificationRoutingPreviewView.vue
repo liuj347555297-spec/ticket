@@ -39,6 +39,7 @@ onMounted(async () => {
   <div class="page-heading"><div><h2>消息路由预览</h2><p>只读预览当前 IAM 组织的事件→通道路由；生产投递时仍由服务端重新计算。</p></div><span class="readonly-badge">受控只读</span></div>
   <p v-if="source === 'demo'" class="demo-notice">演示数据：仅用于开发预览，不代表真实组织、收件人或外部 IM 投递配置。</p>
   <p class="projection-notice">不展示收件人、人员名单、外部 IM 标识、路由表达式、地址、凭证或密钥。此页面没有编辑规则、指定组织、任意收件人或触发投递的能力。</p>
+  <p class="projection-notice">WPS IM 使用部署受管的应用、HTTPS 地址白名单和固定消息卡片；仅投递到服务端已确定的当前收件人。未配置有效凭据或未收到平台回执时，消息只保留站内信，不会显示为外部已送达。</p>
   <section class="panel routing-preview-panel"><div class="panel-header"><div><h3>当前组织命中规则</h3><p>仅平台管理员或审计角色可由服务端授权读取。</p></div></div>
     <p v-if="!currentOrganization" class="workflow-unavailable">正在读取当前 IAM 组织投影…</p>
     <template v-else><form class="routing-preview-form" @submit.prevent="loadPreview"><label class="field"><span>当前组织</span><div class="readonly-field">{{ currentOrganization.organizationName }}</div></label><label class="field"><span>事件</span><select v-model="event"><option value="WORKFLOW_TASK_CREATED">流程任务创建</option><option value="TICKET_ASSIGNED">工单分派</option><option value="TICKET_STATUS_CHANGED">工单状态变更</option><option value="SLA_BREACH_RISK">SLA 违约风险</option><option value="INTEGRATION_ALERT">集成告警</option></select></label><button class="button button--secondary" type="submit" :disabled="loading">{{ loading ? '读取中…' : '预览命中' }}</button></form>

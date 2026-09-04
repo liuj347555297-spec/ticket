@@ -2,9 +2,10 @@ import { ApiError, apiRequest } from '@/api/client'
 
 export type IntegrationSystemType = 'CMDB' | 'MONITORING' | 'LOG' | 'LOG_PLATFORM' | 'APM' | 'OTHER'
 export type IntegrationHealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'DISABLED' | 'NOT_CONFIGURED' | 'NOT_CHECKED' | 'CONFIGURATION_PENDING' | 'UNKNOWN'
-export type ExternalAlertSeverity = 'CRITICAL' | 'WARNING' | 'INFO'
+export type ExternalAlertSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO'
 export type ExternalAlertStatus = 'RECEIVED' | 'PROCESSING' | 'TICKET_CREATED' | 'DEDUPLICATED' | 'SUPPRESSED' | 'RETRY_SCHEDULED' | 'REJECTED' | 'RECOVERED' | 'FAILED' | 'UNKNOWN'
 export type AlertIdempotencyStatus = 'CREATED' | 'DEDUPLICATED' | 'SUPPRESSED' | 'RETRY_SCHEDULED' | 'UNKNOWN'
+export type AlertRecommendation = 'REVIEW_INCIDENT_CREATION' | 'TICKET_ALREADY_LINKED' | 'MANUAL_TRIAGE'
 
 /** Values are server-side summaries only. Endpoint, tenant, credential and payload details are never part of this view model. */
 export interface IntegrationConnectionHealth {
@@ -26,6 +27,8 @@ export interface ExternalAlertSummary {
   /** Server-calculated receipt deduplication result; separate from alert business processing status. */
   idempotencyStatus?: AlertIdempotencyStatus
   ticketId?: string
+  /** Server-only policy result. It does not grant the browser permission to create a ticket. */
+  recommendation: AlertRecommendation
   occurredAt: string
   configurationItemId?: string
   configurationItemName?: string
@@ -82,9 +85,9 @@ const demoOverview: IntegrationOverview = {
     { code: 'APM', systemType: 'APM', enabled: false, healthStatus: 'NOT_CONFIGURED' },
   ],
   recentAlerts: [
-    { alertId: 'ALT-MON-8F2A', sourceCode: 'MONITORING', severity: 'CRITICAL', status: 'TICKET_CREATED', idempotencyStatus: 'CREATED', ticketId: 'TKT-20260820-000421', occurredAt: '2026-08-21T09:35:00+08:00', configurationItemId: 'CI-ERP-ORDER', configurationItemName: 'ERP 采购订单服务' },
-    { alertId: 'ALT-MON-8F19', sourceCode: 'MONITORING', severity: 'WARNING', status: 'RECEIVED', idempotencyStatus: 'DEDUPLICATED', ticketId: 'TKT-20260820-000421', occurredAt: '2026-08-21T09:33:00+08:00', configurationItemId: 'CI-ERP-ORDER', configurationItemName: 'ERP 采购订单服务' },
-    { alertId: 'ALT-NET-21B7', sourceCode: 'MONITORING', severity: 'WARNING', status: 'PROCESSING', idempotencyStatus: 'RETRY_SCHEDULED', occurredAt: '2026-08-21T09:26:00+08:00', configurationItemId: 'CI-NET-HQ', configurationItemName: '总部园区出口网络' },
+    { alertId: 'ALT-MON-8F2A', sourceCode: 'MONITORING', severity: 'CRITICAL', status: 'TICKET_CREATED', idempotencyStatus: 'CREATED', recommendation: 'TICKET_ALREADY_LINKED', ticketId: 'TKT-20260820-000421', occurredAt: '2026-08-21T09:35:00+08:00', configurationItemId: 'CI-ERP-ORDER', configurationItemName: 'ERP 采购订单服务' },
+    { alertId: 'ALT-MON-8F19', sourceCode: 'MONITORING', severity: 'HIGH', status: 'RECEIVED', idempotencyStatus: 'DEDUPLICATED', recommendation: 'REVIEW_INCIDENT_CREATION', ticketId: 'TKT-20260820-000421', occurredAt: '2026-08-21T09:33:00+08:00', configurationItemId: 'CI-ERP-ORDER', configurationItemName: 'ERP 采购订单服务' },
+    { alertId: 'ALT-NET-21B7', sourceCode: 'MONITORING', severity: 'MEDIUM', status: 'PROCESSING', idempotencyStatus: 'RETRY_SCHEDULED', recommendation: 'MANUAL_TRIAGE', occurredAt: '2026-08-21T09:26:00+08:00', configurationItemId: 'CI-NET-HQ', configurationItemName: '总部园区出口网络' },
   ],
 }
 

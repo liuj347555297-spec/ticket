@@ -49,10 +49,54 @@ servicehub:
     storage-root: ${SERVICEHUB_ATTACHMENT_STORAGE_ROOT:${java.io.tmpdir}/servicehub-attachments}
     max-file-size-bytes: 10485760
     max-files-per-ticket: 10
+    clamav:
+      enabled: ${SERVICEHUB_CLAMAV_ENABLED:false}
+      host: ${SERVICEHUB_CLAMAV_HOST:127.0.0.1}
+      allowed-hosts: ${SERVICEHUB_CLAMAV_ALLOWED_HOSTS:127.0.0.1}
+      port: ${SERVICEHUB_CLAMAV_PORT:3310}
+      connect-timeout: ${SERVICEHUB_CLAMAV_CONNECT_TIMEOUT:2s}
+      read-timeout: ${SERVICEHUB_CLAMAV_READ_TIMEOUT:5s}
+      total-timeout: ${SERVICEHUB_CLAMAV_TOTAL_TIMEOUT:15s}
+      chunk-size-bytes: ${SERVICEHUB_CLAMAV_CHUNK_SIZE_BYTES:65536}
+      max-response-bytes: ${SERVICEHUB_CLAMAV_MAX_RESPONSE_BYTES:4096}
+  notification:
+    dispatch:
+      batch-size: ${SERVICEHUB_NOTIFICATION_DISPATCH_BATCH_SIZE:20}
+      max-attempts: ${SERVICEHUB_NOTIFICATION_DISPATCH_MAX_ATTEMPTS:5}
+      retry-base-delay-ms: ${SERVICEHUB_NOTIFICATION_DISPATCH_RETRY_BASE_DELAY_MS:30000}
+      delivering-lease-ms: ${SERVICEHUB_NOTIFICATION_DISPATCH_DELIVERING_LEASE_MS:300000}
+      fixed-delay-ms: ${SERVICEHUB_NOTIFICATION_DISPATCH_FIXED_DELAY_MS:10000}
+    wps-im:
+      # This is deployment-owned application metadata, not a browser-editable integration.
+      # secret-reference names a secret held by the deployment's managed secret provider; it is
+      # never the secret itself. The built-in local resolver intentionally only understands an
+      # env:NAME reference. Production should supply a managed-secret resolver bean instead.
+      enabled: ${SERVICEHUB_WPS_IM_ENABLED:false}
+      app-id: ${SERVICEHUB_WPS_IM_APP_ID:}
+      endpoint: ${SERVICEHUB_WPS_IM_ENDPOINT:}
+      secret-reference: ${SERVICEHUB_WPS_IM_SECRET_REFERENCE:}
+      platform-base-url: ${SERVICEHUB_PLATFORM_BASE_URL:}
+      template-ref: ${SERVICEHUB_WPS_IM_TEMPLATE_REF:}
+      # Exact HTTPS provider host names. This is an egress allow-list, never a suffix match.
+      allowed-hosts: ${SERVICEHUB_WPS_IM_ALLOWED_HOSTS:}
+      connect-timeout-ms: ${SERVICEHUB_WPS_IM_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${SERVICEHUB_WPS_IM_REQUEST_TIMEOUT_MS:5000}
   security:
     # Must be replaced by the internal portal origin for each deployment environment.
     allowed-origins:
       - http://localhost:1525
+    # Allows Spring Security test identities and the local preview shell. Production overrides
+    # this to false so only the server-created VerifiedIamAuthentication marker is accepted.
+    allow-direct-test-identities: true
+  ticket:
+    pagination:
+      cursor-signing-key: ${SERVICEHUB_TICKET_CURSOR_SIGNING_KEY:local-development-only-ticket-cursor-signing-key}
+      cursor-ttl: ${SERVICEHUB_TICKET_CURSOR_TTL:15m}
+  support-queue:
+    idempotency:
+      current-key-version: ${SERVICEHUB_SUPPORT_QUEUE_HMAC_CURRENT_VERSION:local-v1}
+      key-ring: ${SERVICEHUB_SUPPORT_QUEUE_HMAC_KEY_RING:local-v1=local-development-support-queue-hmac-key-material}
+      lease-duration: ${SERVICEHUB_SUPPORT_QUEUE_IDEMPOTENCY_LEASE:2m}
 management:
   endpoints:
     web:

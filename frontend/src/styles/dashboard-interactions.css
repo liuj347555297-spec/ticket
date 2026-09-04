@@ -1,0 +1,61 @@
+.dashboard-queue-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workspace-tabs.dashboard-queue-switcher button {
+  min-height: 40px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.dashboard-queue-switcher button:focus-visible,
+.dashboard-inline-retry:focus-visible,
+.dashboard-state__actions button:focus-visible,
+.dashboard-status-message button:focus-visible {
+  outline: 3px solid #2275c8;
+  outline-offset: 3px;
+}
+
+.dashboard-inline-retry {
+  margin-top: 12px;
+}
+
+.dashboard-state__actions button:disabled,
+.dashboard-status-message button:disabled,
+.dashboard-inline-retry:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+@media (max-width: 760px) {
+  .work-queue-panel .panel-header--workspace {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .workspace-tabs.dashboard-queue-switcher {
+    display: flex;
+    width: 100%;
+  }
+
+  .workspace-tabs.dashboard-queue-switcher button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+
+  .work-queue-panel .panel-footer {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+.workspace-hero { overflow: clip; gap: 24px; }
+.workspace-hero > div { min-width: 0; }
+.workspace-hero .dashboard-state { flex: 0 1 320px; }
+@media (max-width: 680px) {
+  .workspace-hero { flex-direction: column; align-items: stretch; gap: 18px; padding: 20px; }
+  .workspace-hero .dashboard-state { flex: none; width: 100%; margin-top: 0; }
+  .workspace-hero__actions { flex-wrap: wrap; }
+}

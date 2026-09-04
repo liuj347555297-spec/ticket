@@ -21,10 +21,14 @@ public class InMemoryBackofficeAccessRepository implements BackofficeAccessRepos
 
     public InMemoryBackofficeAccessRepository() {
         Instant seeded = Instant.parse("2026-01-01T00:00:00Z");
-        put("iam-u-1002", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SERVICE_MANAGER"), seeded);
-        put("iam-u-local-first-line", Set.of("ROLE_FIRST_LINE_SUPPORT"), seeded);
-        put("iam-u-local-service-manager", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SERVICE_MANAGER"), seeded);
-        put("iam-u-local-admin", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT", "ROLE_SERVICE_MANAGER", "ROLE_PLATFORM_ADMIN", "ROLE_AUDITOR"), seeded);
+        put("iam-u-1002", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SERVICE_MANAGER"),
+            Set.of(new BackofficeDataScope("ORGANIZATION", "org-finance"), new BackofficeDataScope("SERVICE_CATALOG", "SC-browser-performance")), seeded);
+        put("iam-u-local-first-line", Set.of("ROLE_FIRST_LINE_SUPPORT"),
+            Set.of(new BackofficeDataScope("ORGANIZATION", "ORG-LOCAL-IT")), seeded);
+        put("iam-u-local-service-manager", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SERVICE_MANAGER"),
+            Set.of(new BackofficeDataScope("ORGANIZATION", "ORG-LOCAL-IT")), seeded);
+        put("iam-u-local-admin", Set.of("ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT", "ROLE_SERVICE_MANAGER", "ROLE_PLATFORM_ADMIN", "ROLE_AUDITOR"),
+            Set.of(new BackofficeDataScope("ORGANIZATION", "ORG-LOCAL-IT")), seeded);
     }
 
     @Override public Optional<BackofficeAccess> findByIamUserId(String iamUserId) { return Optional.ofNullable(values.get(iamUserId)); }
@@ -39,5 +43,7 @@ public class InMemoryBackofficeAccessRepository implements BackofficeAccessRepos
         values.put(access.iamUserId(), access);
         return access;
     }
-    private void put(String iamUserId, Set<String> roles, Instant now) { values.put(iamUserId, new BackofficeAccess(iamUserId, true, roles, Set.<BackofficeDataScope>of(), 1, now)); }
+    private void put(String iamUserId, Set<String> roles, Set<BackofficeDataScope> scopes, Instant now) {
+        values.put(iamUserId, new BackofficeAccess(iamUserId, true, roles, scopes, 1, now));
+    }
 }

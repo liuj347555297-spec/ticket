@@ -1,6 +1,7 @@
 # Local browser automation state and temporary render artifacts
 .playwright-cli/
 .claude/
+.claude-flow/
 tmp/
 
 # Derived previews and test screenshots
@@ -16,4 +17,6 @@ output/
 .env
 .env.*
 !.env.example
+!devops/.env.production.example
+!devops/.env.offline-test.example
 *.local

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { ApiError } from '@/api/client'
-import { reportsApi, type OperationsReport, type OperationsReportQuery } from '@/api/reports'
+import { reportsApi, type OperationsExportTask, type OperationsReport, type OperationsReportQuery } from '@/api/reports'
 
 function asCalendarDay(value: Date): string {
   const offset = value.getTimezoneOffset() * 60_000
@@ -17,6 +17,8 @@ const report = ref<OperationsReport>()
 const source = ref<'api' | 'demo'>('api')
 const loading = ref(false)
 const error = ref('')
+const exportTask = ref<OperationsExportTask>()
+const exporting = ref(false)
 
 const maxTrend = computed(() => Math.max(1, ...(report.value?.trend.flatMap((item) => [item.createdCount, item.resolvedCount]) ?? [1])))
 const maxStatus = computed(() => Math.max(1, ...(report.value?.statusDistribution.map((item) => item.count) ?? [1])))
@@ -56,6 +58,21 @@ async function load(): Promise<void> {
     loading.value = false
   }
 }
+async function exportReport(): Promise<void> {
+  if (!validRange()) { error.value = '请选择有效的统计起止日期。'; return }
+  exporting.value = true; error.value = ''
+  try {
+    exportTask.value = await reportsApi.requestOperationsExport({ ...filters.value })
+    const poll = async (): Promise<void> => {
+      if (!exportTask.value || ['COMPLETED', 'FAILED'].includes(exportTask.value.status)) return
+      window.setTimeout(async () => {
+        try { exportTask.value = await reportsApi.operationsExport(exportTask.value!.id); await poll() } catch { error.value = '导出任务状态读取失败，请稍后刷新页面确认。' }
+      }, 1200)
+    }
+    await poll()
+  } catch (cause) { error.value = cause instanceof ApiError ? cause.message : '导出任务创建失败。' } finally { exporting.value = false }
+}
+function downloadExport(): void { if (exportTask.value?.status === 'COMPLETED') window.location.assign(reportsApi.operationsExportContentUrl(exportTask.value.id)) }
 
 onMounted(load)
 </script>
@@ -63,7 +80,7 @@ onMounted(load)
 <template>
   <div class="page-heading">
     <div><h2>运营报表</h2><p>量、时效、队列与 SLA 风险均以服务端按当前 IAM 数据范围汇总。</p></div>
-    <RouterLink class="button button--secondary" to="/sla-rules">SLA 规则管理入口</RouterLink>
+    <div class="button-row"><button class="button button--secondary" type="button" :disabled="exporting" @click="exportReport">{{ exporting ? '创建导出任务…' : '异步导出日报' }}</button><RouterLink class="button button--secondary" to="/sla-rules">SLA 规则管理入口</RouterLink></div>
   </div>
 
   <form class="panel report-filter" @submit.prevent="load">
@@ -73,6 +90,7 @@ onMounted(load)
     <button class="button button--primary" type="submit" :disabled="loading">{{ loading ? '刷新中…' : '刷新报表' }}</button>
   </form>
   <p class="report-definition"><b>口径提示：</b>新建/已解决按所选时间范围的事件时间统计；响应、解决时长扣除已审批的 SLA 暂停时段；合规率以已完成或已到期计量对象计算。页面不提供组织切换，服务端会逐请求执行数据范围过滤。</p>
+  <p v-if="exportTask" class="report-definition"><b>导出任务：</b>{{ exportTask.status === 'PENDING' ? '已受理，正在排队。' : exportTask.status === 'RUNNING' ? '服务端正在生成。' : exportTask.status === 'COMPLETED' ? '已完成，导出内容按创建时 IAM 数据范围冻结。' : `失败：${exportTask.errorCode ?? 'UNKNOWN'}` }} <button v-if="exportTask.status === 'COMPLETED'" class="text-button" type="button" @click="downloadExport">下载 CSV</button></p>
   <p v-if="source === 'demo'" class="demo-notice">开发演示数据：仅在 API 连接失败时展示，不代表真实组织、队列或 SLA 数据。</p>
   <p v-if="error" class="form-alert form-alert--error">{{ error }}</p>
   <p v-if="loading && !report" class="panel compact-loading">正在汇总当前权限范围内的运营数据…</p>

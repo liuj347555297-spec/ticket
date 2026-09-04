@@ -40,7 +40,10 @@ public class AttachmentService {
         storage.put(key, bytes); // Bytes are persisted in isolation before any scan decision.
         VirusScanPort.ScanResult scan;
         try { scan=scanner.scan(key, bytes); } catch (RuntimeException e) { scan=new VirusScanPort.ScanResult(false, "SCANNER_UNAVAILABLE"); }
-        TicketAttachment value = new TicketAttachment(id,ticketId,safeName,key,detected,bytes.length,scan.clean()?AttachmentScanStatus.CLEAN:AttachmentScanStatus.REJECTED,scan.detail(),actor.iamUserId(),clock.instant());
+        AttachmentScanStatus scanStatus = scan.clean()
+                ? AttachmentScanStatus.CLEAN
+                : isMalware(scan.detail()) ? AttachmentScanStatus.REJECTED : AttachmentScanStatus.SCAN_FAILED;
+        TicketAttachment value = new TicketAttachment(id,ticketId,safeName,key,detected,bytes.length,scanStatus,scan.detail(),actor.iamUserId(),clock.instant());
         try { attachments.save(value); } catch (RuntimeException exception) { storage.delete(key); throw exception; }
         audit(actor,"ATTACHMENT_UPLOADED",value.id(),Map.of("ticketId",ticketId,"scanStatus",value.scanStatus().name(),"mediaType",detected,"sizeBytes",String.valueOf(bytes.length)));
         return value;
@@ -59,6 +62,7 @@ public class AttachmentService {
     private static String detect(byte[] b) { if (starts(b,"%PDF-".getBytes(StandardCharsets.US_ASCII))) return DETECTED_TYPES.get("pdf"); if (starts(b,new byte[]{(byte)137,80,78,71,13,10,26,10})) return DETECTED_TYPES.get("png"); if (starts(b,new byte[]{(byte)255,(byte)216,(byte)255})) return DETECTED_TYPES.get("jpg"); if (isText(b)) return new String(b,StandardCharsets.UTF_8).contains(",")?DETECTED_TYPES.get("csv"):DETECTED_TYPES.get("txt"); return null; }
     private static boolean starts(byte[] b,byte[] p) { if(b.length<p.length)return false; for(int i=0;i<p.length;i++)if(b[i]!=p[i])return false;return true; }
     private static boolean isText(byte[] b) { if(b.length==0)return false; String text=new String(b,StandardCharsets.UTF_8); if(text.indexOf('\uFFFD')>=0)return false; for(char c:text.toCharArray()) if(c==0||(c<32&&c!='\n'&&c!='\r'&&c!='\t'))return false; return true; }
+    private static boolean isMalware(String detail) { return "MALWARE_FOUND".equals(detail) || "MALWARE_SIGNATURE".equals(detail); }
     private void audit(CurrentUser actor,String action,String resourceId,Map<String,String> attributes) { String requestId=MDC.get("requestId"); audit.publish(new AuditEvent(clock.instant(),requestId==null?"system":requestId,actor.iamUserId(),action,"attachment",resourceId,attributes)); }
     public record Download(TicketAttachment attachment, InputStream content) { }
 }

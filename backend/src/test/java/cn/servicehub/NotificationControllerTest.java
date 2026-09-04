@@ -45,6 +45,25 @@ class NotificationControllerTest {
         mockMvc.perform(patch("/api/v1/notifications/{id}/read", id).with(user("iam-u-1002").roles("REQUESTER")).with(csrf()).header("Idempotency-Key", "b4d3c2b1-1234-4abc-8def-123456789012").contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
             .andExpect(status().isForbidden());
     }
+
+    @Test
+    void routingPreviewUsesTheCurrentIamOrganizationAndNeverExposesCrossOrganizationRules() throws Exception {
+        mockMvc.perform(get("/api/v1/admin/notification-routing-rules/preview")
+                .param("organizationIamOrganizationId", "org-finance").param("event", "TICKET_CREATED")
+                .with(user("iam-u-1002").roles("SERVICE_MANAGER")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.requestedChannel", is("WPS_IM")))
+            .andExpect(jsonPath("$.resolvedChannel", is("IN_APP")))
+            .andExpect(jsonPath("$.inAppFallbackApplied", is(true)));
+        mockMvc.perform(get("/api/v1/admin/notification-routing-rules/preview")
+                .param("organizationIamOrganizationId", "org-it").param("event", "TICKET_CREATED")
+                .with(user("iam-u-1002").roles("SERVICE_MANAGER")))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/admin/notification-routing-rules/preview")
+                .param("organizationIamOrganizationId", "org-it").param("event", "TICKET_CREATED")
+                .with(user("iam-u-1001").roles("REQUESTER")))
+            .andExpect(status().isForbidden());
+    }
     private static String request() { return """
         {"serviceCatalogItemId":"SC-browser-performance","serviceCatalogFormVersion":1,"type":"INCIDENT","title":"核协 E+ 页面卡顿","description":"打开工作台后响应缓慢","structuredFields":{"browser":"Chrome"},"tags":[{"name":"#核协E+","kind":"FREE"}]}
         """; }

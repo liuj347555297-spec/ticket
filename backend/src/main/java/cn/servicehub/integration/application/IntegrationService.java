@@ -34,6 +34,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class IntegrationService {
     private static final Set<String> OPERATIONS_ROLES = Set.of("ROLE_PLATFORM_ADMIN", "ROLE_SERVICE_MANAGER", "ROLE_FIRST_LINE_SUPPORT", "ROLE_SECOND_LINE_SUPPORT", "ROLE_AUDITOR");
+    private static final int MAX_CALLBACK_BODY_BYTES = 64 * 1024;
     private final ExternalConnectionConfigurationRepository connections; private final ConfigurationItemRepository configurationItems;
     private final NormalizedAlertRepository alerts; private final List<ExternalAlertAdapterPort> alertAdapters;
     private final InboundAlertSignatureVerifier signatures; private final TicketRepository tickets;
@@ -54,13 +55,17 @@ public class IntegrationService {
     }
     public List<ConfigurationItem> ticketConfigurationItems(String ticketId) { CurrentUser actor=users.requireCurrentUser(); Ticket ticket=ticket(ticketId); requireTicketRead(actor,ticket); return configurationItems.findByTicketId(ticketId); }
     /** Validates source-owned CI IDs before a ticket is stored, preventing partial ticket creation. */
-    public void validateConfigurationItemIds(List<String> ids) {
-        for (String id : ids) { ConfigurationItem ci=configurationItems.findById(id).orElseThrow(() -> new IllegalArgumentException("Configuration item is not available")); if (!ci.sourceCode().equals("CMDB")) throw new IllegalArgumentException("Configuration item source is invalid"); }
+    public void validateConfigurationItemIds(List<String> ids, String requesterOrganizationId) {
+        if (requesterOrganizationId == null || !requesterOrganizationId.matches("[A-Za-z0-9._:-]{1,128}")) throw new IllegalArgumentException("Requester organization is invalid");
+        for (String id : ids) {
+            ConfigurationItem ci=configurationItems.findById(id).orElseThrow(() -> new IllegalArgumentException("Configuration item is not available"));
+            if (!ci.sourceCode().equals("CMDB") || !requesterOrganizationId.equals(ci.organizationId())) throw new IllegalArgumentException("Configuration item is outside requester organization");
+        }
     }
     /** Runs after a server-authorized ticket has been persisted. Browser input cannot create CIs. */
     public void associateTicketConfigurationItems(Ticket ticket) {
         List<String> ids=ticket.relatedConfigurationItemIds();
-        validateConfigurationItemIds(ids);
+        validateConfigurationItemIds(ids, ticket.requester().organizationId());
         configurationItems.replaceTicketAssociations(ticket.id(), ids);
         if (!ids.isEmpty()) audit(users.currentUser().orElse(new CurrentUser("system",Set.of(),"system")), "TICKET_CI_ASSOCIATED", ticket.id(), Map.of("count",String.valueOf(ids.size())));
     }
@@ -76,19 +81,24 @@ public class IntegrationService {
     }
     /** Called on a permit-listed endpoint only; verification happens before parsing or processing body content. */
     public ReceivedAlert receiveAlert(String sourceCode, String remoteAddress, String timestamp, String nonce, String signature, String body) {
+        if (body == null || body.getBytes(StandardCharsets.UTF_8).length > MAX_CALLBACK_BODY_BYTES) throw new IntegrationSecurityException();
         ExternalConnectionConfiguration config=connections.findByCode(sourceCode).orElseThrow(IntegrationSecurityException::new);
         signatures.verify(config,remoteAddress,timestamp,nonce,signature,body);
         ExternalAlertAdapterPort adapter=alertAdapters.stream().filter(port -> port.supports(sourceCode)).findFirst().orElseThrow(IntegrationSecurityException::new);
         ExternalAlertAdapterPort.AlertInput input=adapter.normalize(body);
         if (input.configurationItemId()!=null && configurationItems.findById(input.configurationItemId()).isEmpty()) throw new IllegalArgumentException("Unknown configuration item");
-        NormalizedAlert existing=alerts.findBySourceAndEventId(sourceCode,input.sourceEventId()).orElse(null); if(existing!=null) return new ReceivedAlert(existing,"DEDUPLICATED");
-        NormalizedAlert saved=alerts.save(new NormalizedAlert("ALT-"+UUID.randomUUID(),sourceCode,input.sourceEventId(),input.fingerprint(),input.severity(),input.title(),input.configurationItemId(),"RECEIVED","CREATED",null,input.occurredAt(),clock.instant()));
+        NormalizedAlert existing=alerts.findBySourceAndEventId(sourceCode,input.sourceEventId()).orElse(null); if(existing!=null) return new ReceivedAlert(existing,"DEDUPLICATED",recommendationFor(existing));
+        NormalizedAlert attempted=new NormalizedAlert("ALT-"+UUID.randomUUID(),sourceCode,input.sourceEventId(),input.fingerprint(),input.severity(),input.title(),input.configurationItemId(),"RECEIVED","CREATED",null,input.occurredAt(),clock.instant());
+        NormalizedAlert saved=alerts.save(attempted);
+        if (!attempted.id().equals(saved.id())) return new ReceivedAlert(saved,"DEDUPLICATED",recommendationFor(saved));
         audit(new CurrentUser("integration:"+sourceCode,Set.of(),"signed-callback"),"EXTERNAL_ALERT_RECEIVED",saved.id(),Map.of("sourceCode",sourceCode,"severity",saved.severity(),"hasConfigurationItem",String.valueOf(saved.configurationItemId()!=null)));
-        return new ReceivedAlert(saved,"CREATED");
+        return new ReceivedAlert(saved,"CREATED",recommendationFor(saved));
     }
     private ConnectionSummary connectionSummary(ExternalConnectionConfiguration c) { return new ConnectionSummary(c.code(),c.displayName(),c.systemType().name(),c.enabled(),c.timeoutMs(),c.rateLimitPerMinute(),c.secretRef()!=null&&!c.secretRef().isBlank(),c.updatedAt()); }
     private ConnectionHealth health(ExternalConnectionConfiguration c) { return new ConnectionHealth(c.code(),c.systemType().name(),c.enabled(),c.enabled()?"NOT_CHECKED":"DISABLED",c.timeoutMs(),c.rateLimitPerMinute(),null); }
-    private AlertSummary alertSummary(NormalizedAlert a) { String name=a.configurationItemId()==null?null:configurationItems.findById(a.configurationItemId()).map(ConfigurationItem::name).orElse(null); return new AlertSummary(a.id(),a.sourceCode(),a.severity(),a.status(),a.idempotencyStatus(),a.ticketId(),a.configurationItemId(),name,a.occurredAt()); }
+    private AlertSummary alertSummary(NormalizedAlert a) { String name=a.configurationItemId()==null?null:configurationItems.findById(a.configurationItemId()).map(ConfigurationItem::name).orElse(null); return new AlertSummary(a.id(),a.sourceCode(),a.severity(),a.status(),a.idempotencyStatus(),a.ticketId(),a.configurationItemId(),name,recommendationFor(a),a.occurredAt()); }
+    /** Reviewed server rule only. It is a recommendation, never browser-triggered automatic creation. */
+    private String recommendationFor(NormalizedAlert alert) { return alert.ticketId()!=null ? "TICKET_ALREADY_LINKED" : ("MONITORING".equals(alert.sourceCode()) && alert.configurationItemId()!=null && Set.of("CRITICAL","HIGH").contains(alert.severity()) ? "REVIEW_INCIDENT_CREATION" : "MANUAL_TRIAGE"); }
     private Ticket ticket(String id) { return tickets.findById(id).orElseThrow(() -> new TicketNotFoundException(id)); }
     private void requireTicketRead(CurrentUser actor,Ticket ticket) { authorization.requireAuthorized(actor,new ObjectAuthorizationRequest("ticket",ticket.id(),ObjectAction.READ,Map.of("requesterIamUserId",ticket.requester().iamUserId(),"serviceCatalogItemId",ticket.serviceCatalogItem().id()))); }
     private void requireOperations(CurrentUser actor) { if(actor.authorities().stream().noneMatch(OPERATIONS_ROLES::contains)) throw new AccessDeniedException("Integration operations is not authorized"); }
@@ -97,8 +107,8 @@ public class IntegrationService {
     private void audit(CurrentUser actor,String action,String id,Map<String,String> attributes) { audit.publish(new AuditEvent(clock.instant(),MDC.get("requestId")==null?"system":MDC.get("requestId"),actor.iamUserId(),action,"integration",id,attributes)); }
     public record ConnectionSummary(String code,String displayName,String systemType,boolean enabled,int timeoutMs,int rateLimitPerMinute,boolean secretConfigured,Instant updatedAt) { }
     public record ConnectionHealth(String code,String systemType,boolean enabled,String healthStatus,int timeoutMs,int rateLimitPerMinute,Instant lastSuccessAt) { }
-    public record AlertSummary(String alertId,String sourceCode,String severity,String status,String idempotencyStatus,String ticketId,String configurationItemId,String configurationItemName,Instant occurredAt) { }
+    public record AlertSummary(String alertId,String sourceCode,String severity,String status,String idempotencyStatus,String ticketId,String configurationItemId,String configurationItemName,String recommendation,Instant occurredAt) { }
     public record OperationsOverview(String scopeLabel,List<ConnectionHealth> connectionHealths,List<AlertSummary> recentAlerts) { }
     public record DeepLinkSummary(String systemCode,String displayName,String resourceType,String resourceId,String url) { }
-    public record ReceivedAlert(NormalizedAlert alert, String idempotencyStatus) { }
+    public record ReceivedAlert(NormalizedAlert alert, String idempotencyStatus, String recommendation) { }
 }
