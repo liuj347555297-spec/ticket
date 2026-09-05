@@ -16,5 +16,6 @@ public record WorkflowOverview(WorkflowInstance instance, List<WorkflowTask> tas
                                List<cn.servicehub.workflow.domain.HandoverRequest> handoverRequests,
                                List<cn.servicehub.workflow.domain.CoHandlerRequest> coHandlerRequests,
                                List<LifecycleActionApprovalSummary> lifecycleApprovalRequests,
-                               List<cn.servicehub.workflow.routing.NodeAssignmentSnapshot> assignmentSnapshots) {
+                               List<cn.servicehub.workflow.routing.NodeAssignmentSnapshot> assignmentSnapshots,
+                               List<AcceptanceCandidate> acceptanceCandidates, int candidateCount) {
 }

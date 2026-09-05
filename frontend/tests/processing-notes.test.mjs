@@ -31,12 +31,11 @@ test('resolution limit counts labels and category without silent truncation', ()
 test('other workflow actions carry processing notes as reason, or leave blank for confirmation', () => {
   assert.deepEqual(prepareProcessingNote('HANDOVER', ' 请网络组接手 ', '', ''), { ok: true, payload: { reason: '请网络组接手', detail: '' } })
   assert.deepEqual(prepareProcessingNote('HOLD', '', '', ''), { ok: true, payload: { reason: '', detail: '' } })
-  assert.equal(prepareProcessingNote('CLOSE', '字'.repeat(1000), '', '').ok, true)
-  assert.equal(prepareProcessingNote('CLOSE', '字'.repeat(1001), '', '').ok, false)
+  assert.deepEqual(prepareProcessingNote('CLOSE', '处理信息由独立接口保存', '', ''), { ok: true, payload: { reason: '', detail: '' } })
 })
 
 test('actions that do not persist reasons neither submit nor consume processing notes', () => {
-  for (const action of ['TRANSFER', 'CLAIM', 'RESUME', 'CLASSIFY', 'REQUEST_USER_FEEDBACK']) {
+  for (const action of ['TRANSFER', 'CLAIM', 'RESUME', 'CLASSIFY', 'START_PROCESSING', 'REQUEST_USER_FEEDBACK', 'CLOSE']) {
     assert.deepEqual(prepareProcessingNote(action, '请保留这段处理意见', '', ''), { ok: true, payload: { reason: '', detail: '' } })
     assert.deepEqual(prepareProcessingNote(action, '字'.repeat(3000), '', ''), { ok: true, payload: { reason: '', detail: '' } })
     assert.deepEqual(prepareProcessingNote(action, '', '', ''), { ok: true, payload: { reason: '', detail: '' } })

@@ -13,6 +13,8 @@ servers:
 tags:
   - name: System
   - name: Identity
+  - name: LocalAuthentication
+  - name: LocalAccountAdmin
   - name: IdentitySync
   - name: BackofficeAccessAdmin
   - name: Security
@@ -40,6 +42,99 @@ tags:
   - name: Alerts
   - name: Observability
 paths:
+  /tickets/{ticketId}/processing-details:
+    parameters:
+      - $ref: '#/components/parameters/TicketId'
+    get:
+      tags: [Workflow]
+      operationId: getTicketProcessingDetails
+      summary: 读取工单处理表单
+      description: 无保存记录返回 version=0；editable 是当前处理权限，不替代保存时校验。
+      responses:
+        '200': { description: 处理字段, content: { application/json: { schema: { $ref: '#/components/schemas/TicketProcessingDetails' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Workflow]
+      operationId: saveTicketProcessingDetails
+      summary: 保存处理表单，不推进流程
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string, pattern: '^"?[0-9]+"?$' }
+          description: 独立处理表单版本，首次保存为 0。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TicketProcessingDetailsInput' }
+      responses:
+        '200': { description: 已保存, content: { application/json: { schema: { $ref: '#/components/schemas/TicketProcessingDetails' } } } }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /ticket-drafts:
+    get:
+      tags: [Tickets]
+      operationId: listPersonalTicketDrafts
+      summary: 读取当前账号的个人草稿箱
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+        - { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200':
+          description: 只返回当前主体的草稿摘要，不启动工单流程。
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/PersonalTicketDraft' } }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+  /ticket-drafts/{draftId}:
+    parameters:
+      - { name: draftId, in: path, required: true, schema: { type: string, pattern: '^TD-[0-9a-f-]{36}$' } }
+    get:
+      tags: [Tickets]
+      operationId: readPersonalTicketDraft
+      responses:
+        '200': { description: 本人草稿及填写内容, content: { application/json: { schema: { $ref: '#/components/schemas/PersonalTicketDraft' } } } }
+        '404': { description: 不存在或不属于当前账号 }
+    put:
+      tags: [Tickets]
+      operationId: savePersonalTicketDraft
+      description: 客户端生成 UUID。首次版本为 0；更新使用 If-Match 与 body version。响应丢失后，同一版本与同一内容可重试；不会创建正式工单。附件二进制与 blob URL 不在草稿中保存。
+      parameters:
+        - { name: If-Match, in: header, required: true, schema: { type: string } }
+        - { name: X-CSRF-TOKEN, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version, payload]
+              properties:
+                version: { type: integer, minimum: 0 }
+                payload: { $ref: '#/components/schemas/PersonalTicketDraftPayload' }
+      responses:
+        '200': { description: 已暂存, content: { application/json: { schema: { $ref: '#/components/schemas/PersonalTicketDraft' } } } }
+        '409': { description: 草稿已经变化 }
+    delete:
+      tags: [Tickets]
+      operationId: deletePersonalTicketDraft
+      parameters:
+        - { name: If-Match, in: header, required: true, schema: { type: string } }
+        - { name: X-CSRF-TOKEN, in: header, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 本人草稿已删除 }
+        '404': { description: 不存在或不属于当前账号 }
+        '409': { description: 草稿已被修改 }
   /service-systems/{systemCode}/catalog-items:
     get:
       tags: [ServiceCatalog]
@@ -98,10 +193,10 @@ paths:
   /me:
     get:
       tags: [Identity]
-      summary: 获取当前 IAM 用户及平台投影
+      summary: 获取当前登录账号及授权投影
       description: |
         返回当前已认证主体的只读 IAM 用户/组织投影及当前授权摘要；不返回密码、IAM 令牌、完整联系方式或组织管理能力。
-        平台不创建本地账号、不编辑 IAM 用户或组织；响应仅用于展示，不得替代每次请求的服务端实时授权。
+        支持平台本地账号；IAM 用户/组织仍为只读可选投影。本响应仅用于展示，不得替代每次请求的服务端实时授权。
       operationId: getCurrentUser
       responses:
         '200':
@@ -112,6 +207,145 @@ paths:
                 $ref: '#/components/schemas/CurrentUserResponse'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+  /auth/login:
+    post:
+      tags: [LocalAuthentication]
+      operationId: loginWithLocalAccount
+      summary: 使用本地账号密码建立浏览器会话
+      description: 登录名不存在、密码错误、账号停用和锁定使用相同失败响应；成功后服务端更换既有 Session ID。
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalLoginRequest' }
+      responses:
+        '200':
+          description: 已建立会话的当前用户投影
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUserResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /auth/logout:
+    post:
+      tags: [LocalAuthentication]
+      operationId: logoutLocalSession
+      summary: 注销当前浏览器会话
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: 会话已失效 }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /admin/local-accounts:
+    get:
+      tags: [LocalAccountAdmin]
+      operationId: listLocalAccounts
+      summary: 分页查询本地账号
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - { name: q, in: query, schema: { type: string, maxLength: 128 } }
+        - { name: status, in: query, schema: { type: string, enum: [ALL, ACTIVE, LOCKED, DISABLED] } }
+      responses:
+        '200':
+          description: 账号分页
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccountPage' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [LocalAccountAdmin]
+      operationId: createLocalAccount
+      summary: 创建本地账号及后台授权
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountCreateRequest' }
+      responses:
+        '201':
+          description: 已创建；响应不含密码哈希
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccount' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 登录名或并发状态冲突 }
+  /admin/local-accounts/{accountId}:
+    parameters:
+      - name: accountId
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+    put:
+      tags: [LocalAccountAdmin]
+      operationId: updateLocalAccount
+      summary: 更新本地账号资料、状态与授权
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/WorkflowIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountUpdateRequest' }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccount' }
+        '409': { description: If-Match、请求 version 或当前版本冲突 }
+    delete:
+      tags: [LocalAccountAdmin]
+      operationId: disableLocalAccount
+      summary: 软停用本地账号
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/WorkflowIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountDeleteRequest' }
+      responses:
+        '204': { description: 已停用并使既有会话失效 }
+        '409': { description: If-Match、请求 version 或当前版本冲突 }
+  /admin/local-accounts/{accountId}/password-reset:
+    post:
+      tags: [LocalAccountAdmin]
+      operationId: resetLocalAccountPassword
+      summary: 管理员重置本地账号密码并使既有会话失效
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' }
+        - $ref: '#/components/parameters/CsrfToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/WorkflowIfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocalAccountPasswordResetRequest' }
+      responses:
+        '200':
+          description: 已重置；响应不含密码或哈希
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LocalAccount' }
+        '409': { description: If-Match、请求 version 或当前版本冲突 }
   /identity/organizations:
     get:
       tags: [Identity]
@@ -2386,6 +2620,142 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/AttachmentNotAvailable'
+  /knowledge/documents:
+    get:
+      tags: [KnowledgeBase]
+      operationId: listKnowledgeDocuments
+      summary: 按当前权限检索知识
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/KnowledgeDocumentWire' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/workbench:
+    get:
+      tags: [KnowledgeBase]
+      operationId: listKnowledgeWorkbench
+      summary: 个人提交和审核工作区
+      parameters:
+        - { name: section, in: query, required: true, schema: { type: string, enum: [MY_DRAFTS, MY_SUBMISSIONS, PENDING_REVIEW, REVIEWED] } }
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/KnowledgeDocumentWire' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/favorites:
+    get:
+      tags: [KnowledgeBase]
+      operationId: listKnowledgeFavorites
+      summary: 读取当前账号知识收藏
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/KnowledgeDocumentWire' } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/workspace/{documentId}:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string, pattern: '^KDOC-[0-9a-fA-F-]{36}$' } }
+    get:
+      tags: [KnowledgeBase]
+      operationId: readWorkspaceKnowledge
+      summary: 读取本人草稿或授权审核文档
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeDocumentWire' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/drafts:
+    post:
+      tags: [KnowledgeBase]
+      operationId: createManualKnowledgeDraft
+      summary: 创建知识草稿，不直接发布
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualKnowledgeDraftInput' }
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeDocumentWire' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/{documentId}/submit:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string, pattern: '^KDOC-[0-9a-fA-F-]{36}$' } }
+    post:
+      tags: [KnowledgeBase]
+      operationId: submitKnowledgeDraft
+      summary: 提交本人知识草稿至待审核
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: 当前账号已授权结果
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeDocumentWire' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/{documentId}/draft:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string, pattern: '^KDOC-[0-9a-fA-F-]{36}$' } }
+    put:
+      tags: [KnowledgeBase]
+      operationId: updateManualKnowledgeDraft
+      summary: 编辑本人知识草稿并生成新版本
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+        - { name: If-Match, in: header, required: true, schema: { type: string, pattern: '^"[1-9][0-9]*"$' }, description: 当前知识版本号 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ManualKnowledgeDraftInput' }
+      responses:
+        '200': { description: 新草稿版本, content: { application/json: { schema: { $ref: '#/components/schemas/KnowledgeDocumentWire' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      tags: [KnowledgeBase]
+      operationId: deleteKnowledgeDraft
+      summary: 删除本人未提交知识草稿
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204': { description: 已删除 }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /knowledge/documents/{documentId}/favorite:
+    parameters:
+      - { name: documentId, in: path, required: true, schema: { type: string, pattern: '^KDOC-[0-9a-fA-F-]{36}$' } }
+    put:
+      tags: [KnowledgeBase]
+      operationId: favoriteKnowledgeDocument
+      summary: 收藏知识
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200': { description: 本人收藏状态, content: { application/json: { schema: { type: object, properties: { favorite: { type: boolean } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [KnowledgeBase]
+      operationId: unfavoriteKnowledgeDocument
+      summary: 取消收藏
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200': { description: 本人收藏状态, content: { application/json: { schema: { type: object, properties: { favorite: { type: boolean } } } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /knowledge/articles:
     get:
       tags: [KnowledgeBase]
@@ -4097,6 +4467,97 @@ components:
           schema:
             $ref: '#/components/schemas/ApiError'
   schemas:
+    ManualKnowledgeDraftInput:
+      type: object
+      required: [title, serviceCatalogItemIds, content]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        categoryCode: { type: string, pattern: '^[A-Z][A-Z0-9_-]{1,63}$' }
+        tags: { type: array, items: { type: string } }
+        serviceCatalogItemIds: { type: array, minItems: 1, maxItems: 20, items: { type: string } }
+        content: { type: string, minLength: 1, maxLength: 100000, description: 纯文本正文，显示时转义 }
+    KnowledgeDocumentWire:
+      type: object
+      required: [id, title, categoryCode, status, currentVersionNumber, favorite]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        categoryCode: { type: string }
+        tags: { type: array, items: { type: string } }
+        owningOrganizationId: { type: string }
+        serviceCatalogItemIds: { type: array, items: { type: string } }
+        status: { type: string, enum: [DRAFT, IMPORTED, PENDING_REVIEW, PUBLISHED, SUPERSEDED, REJECTED, ARCHIVED, MIGRATION_PENDING] }
+        currentVersionId: { type: string, nullable: true }
+        currentVersionNumber: { type: integer, minimum: 1 }
+        creatorIamUserId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        sourceTicketId: { type: string, nullable: true }
+        favorite: { type: boolean }
+    TicketProcessingDetailsInput:
+      type: object
+      properties:
+        eventSource: { type: string, nullable: true, enum: [PHONE, EMAIL, MONITORING_ALERT, ON_SITE_FEEDBACK, OTHER] }
+        proposingOrganization: { type: string, maxLength: 160, nullable: true }
+        onSiteSupportRequired: { type: boolean, nullable: true }
+        causeCategory: { type: string, nullable: true, enum: [HARDWARE, SOFTWARE_DEFECT, CONFIGURATION, NETWORK, ACCESS_CONTROL, DATA, USER_OPERATION, EXTERNAL_DEPENDENCY, UNDER_INVESTIGATION] }
+        processingDescription: { type: string, maxLength: 4000, nullable: true }
+        resolutionDescription: { type: string, maxLength: 4000, nullable: true }
+        thirdPartyHandled: { type: boolean, nullable: true }
+        currentProgress: { type: string, maxLength: 1000, nullable: true }
+    TicketProcessingDetails:
+      allOf:
+        - $ref: '#/components/schemas/TicketProcessingDetailsInput'
+        - type: object
+          required: [ticketId, version, editable]
+          properties:
+            ticketId: { type: string }
+            version: { type: integer, format: int64, minimum: 0 }
+            editable: { type: boolean }
+            updatedByIamUserId: { type: string, nullable: true }
+            updatedAt: { type: string, format: date-time, nullable: true }
+    PersonalTicketDraftPayload:
+      type: object
+      additionalProperties: false
+      description: 总大小限制 128 KiB。只存本人尚未发起的申请内容；正式创建时重新验证表单和系统。
+      required: [form, fieldValues, formVersion]
+      properties:
+        formVersion: { type: [integer, 'null'], minimum: 1 }
+        fieldValues:
+          type: object
+          maxProperties: 100
+          additionalProperties:
+            oneOf:
+              - { type: string, maxLength: 10000 }
+              - { type: boolean }
+              - { type: number }
+              - { type: array, maxItems: 100, items: { type: string, maxLength: 500 } }
+        form:
+          type: object
+          additionalProperties: false
+          required: [systemCode, moduleCode, catalogId, type, title, descriptionHtml, descriptionText, tags]
+          properties:
+            systemCode: { type: string, maxLength: 64 }
+            moduleCode: { type: string, maxLength: 64 }
+            catalogId: { type: string, maxLength: 64 }
+            type: { type: string, enum: [INCIDENT, SERVICE_REQUEST, ACCESS_REQUEST, PROBLEM, CHANGE] }
+            title: { type: string, maxLength: 200 }
+            descriptionHtml: { type: string, maxLength: 50000, description: 服务端净化后的富文本 }
+            descriptionText: { type: string, maxLength: 20000 }
+            tags: { type: array, maxItems: 20, items: { type: string, maxLength: 100 } }
+    PersonalTicketDraft:
+      type: object
+      required: [id, title, version, updatedAt]
+      properties:
+        id: { type: string, pattern: '^TD-[0-9a-f-]{36}$' }
+        title: { type: string }
+        ownerId: { type: string, description: 仅单份草稿详情返回 }
+        systemCode: { type: string, description: 列表摘要字段 }
+        catalogId: { type: string, description: 列表摘要字段 }
+        version: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        payload: { $ref: '#/components/schemas/PersonalTicketDraftPayload' }
     WorkflowBpmnDiagram:
       type: object
       required: [processKey, processDefinitionId, version, bpmnXml, layoutSource, activeNodeIds, completedNodeIds, availability]
@@ -4198,6 +4659,83 @@ components:
         version: { type: integer, format: int64 }
         executionMode: { type: string, const: DRAFT_ONLY }
         updatedAt: { type: string, format: date-time }
+    LocalLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [loginName, password]
+      properties:
+        loginName: { type: string, minLength: 3, maxLength: 128 }
+        password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
+    LocalAccount:
+      type: object
+      additionalProperties: false
+      required: [id, loginName, displayName, organizationId, enabled, failedLoginCount, roles, systemCodes, version, updatedAt]
+      properties:
+        id: { type: string, maxLength: 128 }
+        loginName: { type: string, maxLength: 128 }
+        displayName: { type: string, maxLength: 100 }
+        organizationId: { type: string, maxLength: 128 }
+        enabled: { type: boolean }
+        lockedUntil: { type: [string, 'null'], format: date-time }
+        failedLoginCount: { type: integer, minimum: 0 }
+        roles:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [REQUESTER, FIRST_LINE_SUPPORT, SECOND_LINE_SUPPORT, APPROVER, SERVICE_MANAGER, SLA_MANAGER, PLATFORM_ADMIN, AUDITOR] }
+        systemCodes:
+          type: array
+          uniqueItems: true
+          items: { type: string, maxLength: 64 }
+        version: { type: integer, minimum: 1 }
+        updatedAt: { type: string, format: date-time }
+    LocalAccountPage:
+      type: object
+      additionalProperties: false
+      required: [items, page, pageSize, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/LocalAccount' } }
+        page: { type: integer, minimum: 1 }
+        pageSize: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, minimum: 0 }
+    LocalAccountCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [loginName, displayName, organizationId, password, roles, systemCodes, reason]
+      properties:
+        loginName: { type: string, minLength: 3, maxLength: 128 }
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        organizationId: { type: string, maxLength: 128 }
+        password: { type: string, minLength: 12, maxLength: 128, writeOnly: true }
+        roles: { type: array, uniqueItems: true, items: { type: string } }
+        systemCodes: { type: array, uniqueItems: true, items: { type: string } }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    LocalAccountUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [version, displayName, organizationId, enabled, roles, systemCodes, reason]
+      properties:
+        version: { type: integer, minimum: 1 }
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        organizationId: { type: string, maxLength: 128 }
+        enabled: { type: boolean }
+        roles: { type: array, uniqueItems: true, items: { type: string } }
+        systemCodes: { type: array, uniqueItems: true, items: { type: string } }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    LocalAccountPasswordResetRequest:
+      type: object
+      additionalProperties: false
+      required: [version, password, reason]
+      properties:
+        version: { type: integer, minimum: 1 }
+        password: { type: string, minLength: 12, maxLength: 128, writeOnly: true }
+        reason: { type: string, minLength: 4, maxLength: 500 }
+    LocalAccountDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [version, reason]
+      properties:
+        version: { type: integer, minimum: 1 }
+        reason: { type: string, minLength: 4, maxLength: 500 }
     HealthResponse:
       type: object
       additionalProperties: false
@@ -5240,8 +5778,8 @@ components:
       enum: [DRAFT, SUBMITTED, PENDING_CLASSIFICATION, PENDING_ASSIGNMENT, PENDING_ACCEPTANCE, IN_PROGRESS, RESOLVED, PENDING_USER_FEEDBACK, CLOSED, CANCELLED, ON_HOLD]
     TicketQueue:
       type: string
-      description: 当前主体派生的个人工作视图；不是可由客户端创建或指定成员的团队队列。
-      enum: [ALL, MY_TODO, OVERDUE, TODAY_COMPLETED, MY_DONE, MY_REQUESTED, DRAFTS, TO_READ]
+      description: 当前主体派生的个人工作视图；TODAY_DUE 是平台业务日内响应或解决截止且未完成的待办，TODAY_COMPLETED 是今日已完成；不是可由客户端创建或指定成员的团队队列。
+      enum: [ALL, MY_TODO, OVERDUE, TODAY_DUE, TODAY_COMPLETED, MY_DONE, MY_REQUESTED, DRAFTS, TO_READ]
     SupportQueueStatus:
       type: string
       enum: [DRAFT, ACTIVE, INACTIVE, MIGRATION_PENDING]
@@ -7640,7 +8178,7 @@ components:
     WorkflowOverviewReadModel:
       type: object
       additionalProperties: false
-      required: [instance, tasks, comments, availableActions, events, participants, approvalRequests, approvalDecisions, controlledJumpActions]
+      required: [instance, tasks, comments, availableActions, events, participants, approvalRequests, approvalDecisions, controlledJumpActions, acceptanceCandidates, candidateCount]
       properties:
         instance:
           $ref: '#/components/schemas/WorkflowInstanceProjection'
@@ -7678,6 +8216,35 @@ components:
           description: 仅服务经理或平台管理员可见的服务端计算管理能力；不是授权凭据。
           items:
             $ref: '#/components/schemas/ControlledJumpManagementAction'
+        acceptanceCandidates:
+          type: array
+          maxItems: 200
+          description: 仅当前活动的未领取共享队列任务返回；领取后必须为空。历史候选仍只留在服务端路由审计快照。
+          items:
+            $ref: '#/components/schemas/AcceptanceCandidateProjection'
+        candidateCount:
+          type: integer
+          minimum: 0
+          maximum: 200
+          description: 与 acceptanceCandidates 数量一致；写入抢单时仍由服务端重新校验资格和版本。
+    AcceptanceCandidateProjection:
+      type: object
+      additionalProperties: false
+      required: [iamUserId, displayName]
+      properties:
+        iamUserId:
+          type: string
+          maxLength: 128
+          description: 平台内部稳定人员 ID，不是登录凭据。
+        displayName:
+          type: string
+          maxLength: 100
+        organizationName:
+          type: [string, 'null']
+          maxLength: 200
+        positionName:
+          type: [string, 'null']
+          maxLength: 200
     WorkflowInstanceProjection:
       type: object
       additionalProperties: false
@@ -9004,7 +9571,7 @@ components:
           maximum: 599
         code:
           type: string
-          enum: [VALIDATION_FAILED, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, ATTACHMENT_REJECTED, ATTACHMENT_NOT_AVAILABLE, ATTACHMENT_SCAN_UNAVAILABLE, KNOWLEDGE_IMPORT_REJECTED, KNOWLEDGE_DOCUMENT_NOT_AVAILABLE, KNOWLEDGE_PUBLICATION_NOT_ALLOWED, INTEGRATION_CONFIGURATION_NOT_ALLOWED, INTEGRATION_CALLBACK_REJECTED, INTEGRATION_REPLAY_REJECTED, CONFIGURATION_ITEM_NOT_AVAILABLE, ALERT_NOT_AVAILABLE, OBSERVABILITY_LINK_NOT_AVAILABLE, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_FAILED, AUTHENTICATION_FAILED, LOCAL_ACCOUNT_CONFLICT, DYNAMIC_FORM_VALIDATION_FAILED, CATALOG_NOT_AVAILABLE, RULE_MATCH_NOT_ALLOWED, ATTACHMENT_REJECTED, ATTACHMENT_NOT_AVAILABLE, ATTACHMENT_SCAN_UNAVAILABLE, KNOWLEDGE_IMPORT_REJECTED, KNOWLEDGE_DOCUMENT_NOT_AVAILABLE, KNOWLEDGE_PUBLICATION_NOT_ALLOWED, INTEGRATION_CONFIGURATION_NOT_ALLOWED, INTEGRATION_CALLBACK_REJECTED, INTEGRATION_REPLAY_REJECTED, CONFIGURATION_ITEM_NOT_AVAILABLE, ALERT_NOT_AVAILABLE, OBSERVABILITY_LINK_NOT_AVAILABLE, NOTIFICATION_NOT_AVAILABLE, NOTIFICATION_RECIPIENT_NOT_ALLOWED, NOTIFICATION_TEMPLATE_REJECTED, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, VERSION_CONFLICT, IDEMPOTENCY_CONFLICT, INVALID_WORKFLOW_ACTION, INVALID_PROCESS_NODE, APPROVAL_REQUIRED, RATE_LIMITED, SERVICE_UNAVAILABLE, INTERNAL_ERROR]
         detail:
           type: string
           maxLength: 500

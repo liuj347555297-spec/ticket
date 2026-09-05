@@ -17,11 +17,11 @@ export type TicketStatus =
   | 'ON_HOLD'
 export type TicketPriority = 'P1' | 'P2' | 'P3' | 'P4'
 export type TicketDescriptionFormat = 'PLAIN_TEXT' | 'RICH_TEXT'
-export type TicketQueue = 'ALL' | 'MY_TODO' | 'OVERDUE' | 'TODAY_COMPLETED' | 'MY_DONE' | 'MY_REQUESTED' | 'DRAFTS' | 'TO_READ'
+export type TicketQueue = 'ALL' | 'MY_TODO' | 'OVERDUE' | 'TODAY_DUE' | 'TODAY_COMPLETED' | 'MY_DONE' | 'MY_REQUESTED' | 'DRAFTS' | 'TO_READ'
 export type TagKind = 'STANDARD' | 'FREE'
 export type TicketRelationType = 'RELATED' | 'DUPLICATE_OF' | 'PARENT_OF' | 'PROBLEM_REFERENCE' | 'CHANGE_REFERENCE'
 /** Values are the server's WorkflowAction enum, not client-defined state transitions. */
-export type TicketLifecycleAction = 'CLASSIFY' | 'ASSIGN' | 'ACCEPT' | 'REQUEST_USER_FEEDBACK' | 'RESOLVE' | 'CLOSE' | 'REOPEN' | 'CANCEL' | 'HOLD' | 'RESUME' | 'ESCALATE'
+export type TicketLifecycleAction = 'CLASSIFY' | 'ASSIGN' | 'ACCEPT' | 'START_PROCESSING' | 'REQUEST_USER_FEEDBACK' | 'RESOLVE' | 'CLOSE' | 'REOPEN' | 'CANCEL' | 'HOLD' | 'RESUME' | 'ESCALATE'
 export type TicketWorkAction = 'TRANSFER' | 'ADD_COHANDLER' | 'CLAIM' | 'HANDOVER'
 export type TicketActionCode = TicketLifecycleAction | TicketWorkAction | 'INTERNAL_COMMENT' | 'CONTROLLED_JUMP_REQUEST'
 
@@ -37,6 +37,14 @@ export interface TicketParticipant {
   role: 'PRIMARY' | 'COLLABORATOR'
   identity: IdentitySnapshot
   assignedAt: string
+}
+
+/** Minimal active-directory projection returned only for an unclaimed shared queue task. */
+export interface AcceptanceCandidate {
+  iamUserId: string
+  displayName: string
+  organizationName?: string
+  positionName?: string
 }
 
 export interface TicketTimelineEvent {
@@ -132,6 +140,8 @@ interface WorkflowOverviewWire {
     identity: IdentitySnapshot
     assignedAt: string
   }>
+  acceptanceCandidates?: AcceptanceCandidate[]
+  candidateCount?: number
   approvalRequests: Array<{
     id: string
     applicantIamUserId: string
@@ -215,7 +225,7 @@ interface WorkflowOverviewWire {
     executedAt?: string
     createdAt: string
   }>
-  assignmentSnapshots?: Array<{ nodeKey: string; mode: 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS'; candidateRoles: string[]; policyVersion: number; selectedIamUserId?: string; capturedAt: string }>
+  assignmentSnapshots?: Array<{ nodeKey: string; mode: 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS' | 'SHARED_QUEUE'; candidateRoles: string[]; policyVersion: number; selectedIamUserId?: string; capturedAt: string }>
   /** Returned only to service managers/platform administrators. Never inferred by the browser. */
   controlledJumpActions: Array<{
     requestId: string
@@ -422,6 +432,27 @@ export interface TicketActionResult {
 }
 export interface NextHandlerCandidate { iamUserId: string; displayName: string; organizationName: string }
 
+export interface TicketProcessingDetails {
+  ticketId: string
+  eventSource?: 'PHONE' | 'EMAIL' | 'MONITORING_ALERT' | 'ON_SITE_FEEDBACK' | 'OTHER'
+  proposingOrganization?: string
+  onSiteSupportRequired?: boolean
+  causeCategory?: 'HARDWARE' | 'SOFTWARE_DEFECT' | 'CONFIGURATION' | 'NETWORK' | 'ACCESS_CONTROL' | 'DATA' | 'USER_OPERATION' | 'EXTERNAL_DEPENDENCY' | 'UNDER_INVESTIGATION'
+  processingDescription?: string
+  resolutionDescription?: string
+  thirdPartyHandled?: boolean
+  currentProgress?: string
+  version: number
+  updatedByIamUserId?: string
+  updatedAt?: string
+  /** Display hint only. PUT performs ticket and current-primary-handler authorization again. */
+  editable: boolean
+}
+
+export type TicketProcessingDetailsInput = Pick<TicketProcessingDetails,
+  'eventSource' | 'proposingOrganization' | 'onSiteSupportRequired' | 'causeCategory' |
+  'processingDescription' | 'resolutionDescription' | 'thirdPartyHandled' | 'currentProgress'>
+
 export interface TicketWorkActionResult extends Omit<TicketActionResult, 'slaImpact'> {
   participants: TicketParticipant[]
 }
@@ -508,7 +539,7 @@ export const ticketApi = {
     })
     return {
       ticket,
-      decision: { outcome: workflowOutcome(request.action), workflowInstanceId: 'server-managed', currentNodeCode: ticket.status, auditEventId: 'server-managed' },
+      decision: { outcome: workflowOutcome(request.action, ticket.status), workflowInstanceId: 'server-managed', currentNodeCode: ticket.status, auditEventId: 'server-managed' },
       slaImpact: { calculatedByServer: true, impact: 'RECALCULATED' },
     }
   },
@@ -517,6 +548,14 @@ export const ticketApi = {
     return apiRequest<WorkflowOverviewWire>(`/tickets/${encodeURIComponent(ticketId)}/workflow`)
   },
   async getNextHandlerCandidates(ticketId: string): Promise<NextHandlerCandidate[]> { return apiRequest<NextHandlerCandidate[]>(`/tickets/${encodeURIComponent(ticketId)}/workflow/next-handler-candidates?targetNode=processing`) },
+  async getTransferCandidates(ticketId: string): Promise<NextHandlerCandidate[]> { return apiRequest<NextHandlerCandidate[]>(`/tickets/${encodeURIComponent(ticketId)}/workflow/transfer-candidates`) },
+  async getAssignmentCandidates(ticketId: string): Promise<NextHandlerCandidate[]> { return apiRequest<NextHandlerCandidate[]>(`/tickets/${encodeURIComponent(ticketId)}/workflow/assignment-candidates`) },
+  async getProcessingDetails(ticketId: string): Promise<TicketProcessingDetails> { return apiRequest<TicketProcessingDetails>(`/tickets/${encodeURIComponent(ticketId)}/processing-details`) },
+  async saveProcessingDetails(ticketId: string, version: number, details: TicketProcessingDetailsInput): Promise<TicketProcessingDetails> {
+    return apiRequest<TicketProcessingDetails>(`/tickets/${encodeURIComponent(ticketId)}/processing-details`, {
+      method: 'PUT', headers: { 'If-Match': `"${version}"` }, body: details,
+    })
+  },
 
   async preflightControlledJump(ticketId: string, requestId: string): Promise<ControlledJumpPreflight> {
     return apiRequest<ControlledJumpPreflight>(`/tickets/${encodeURIComponent(ticketId)}/workflow/approval-requests/${encodeURIComponent(requestId)}/preflight`)

@@ -19,6 +19,8 @@ import cn.servicehub.access.domain.BackofficeAccessRepository;
 import cn.servicehub.access.domain.BackofficeDataScope;
 import cn.servicehub.security.VerifiedIamAuthenticationFactory;
 import cn.servicehub.ticket.domain.IdentitySnapshot;
+import cn.servicehub.sla.domain.TicketSlaTarget;
+import cn.servicehub.sla.domain.TicketSlaTargetRepository;
 import cn.servicehub.workflow.domain.TicketWorkflowRepository;
 import cn.servicehub.workflow.routing.NodeAssignmentResolver;
 import java.time.Instant;
@@ -65,6 +67,9 @@ class TicketControllerTest {
 
     @Autowired
     private NodeAssignmentResolver nodeAssignments;
+
+    @Autowired
+    private TicketSlaTargetRepository slaTargets;
 
     @Test
     void createUsesAuthenticatedIdentityAndServerRules() throws Exception {
@@ -151,6 +156,22 @@ class TicketControllerTest {
         mockMvc.perform(get("/api/v1/tickets?queue=MY_TODO").with(user("iam-u-1001").roles("FIRST_LINE_SUPPORT")))
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.total", is(1)));
+    }
+
+    @Test
+    void todayDueContainsOnlyCurrentTodoWithAnUnfinishedDeadlineToday() throws Exception {
+        String ticketId = responseId(mockMvc.perform(create("b5d3c2b1-1234-4abc-8def-123456789012", CREATE_REQUEST, "iam-u-1001"))
+            .andExpect(status().isCreated()).andReturn());
+        TicketSlaTarget current = slaTargets.findByTicketId(ticketId).orElseThrow();
+        Instant today = Instant.now();
+        TicketSlaTarget dueToday = new TicketSlaTarget(current.ticketId(), current.policyId(), current.policyNameSnapshot(), current.calendarKeySnapshot(),
+            today, today, null, null, current.pausedSeconds(), current.pauseStartedAt(), current.riskLevel(), false, false, today, current.version() + 1);
+        slaTargets.save(dueToday, current.version());
+
+        mockMvc.perform(get("/api/v1/tickets?queue=TODAY_DUE").with(user("iam-u-1001").roles("FIRST_LINE_SUPPORT")))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.total", is(1)))
+            .andExpect(jsonPath("$.items[0].id", is(ticketId)));
     }
 
     @Test

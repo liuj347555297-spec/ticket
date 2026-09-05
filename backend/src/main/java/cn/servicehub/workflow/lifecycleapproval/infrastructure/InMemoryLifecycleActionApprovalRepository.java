@@ -14,7 +14,15 @@ import org.springframework.stereotype.Repository;
 @Profile("!mysql")
 public class InMemoryLifecycleActionApprovalRepository implements LifecycleActionApprovalRepository {
     private final CopyOnWriteArrayList<LifecycleActionApprovalRequest> requests = new CopyOnWriteArrayList<>();
-    @Override public void save(LifecycleActionApprovalRequest request) { requests.add(request); }
+    @Override public synchronized void save(LifecycleActionApprovalRequest request) {
+        boolean duplicate = requests.stream().anyMatch(current -> current.ticketId().equals(request.ticketId())
+            && current.action() == request.action()
+            && current.sourceTicketVersion() == request.sourceTicketVersion()
+            && current.sourceWorkflowVersion() == request.sourceWorkflowVersion()
+            && java.util.Set.of("PENDING_APPROVAL", "EXPIRING").contains(current.status()));
+        if (duplicate) throw new cn.servicehub.workflow.application.WorkflowConflictException();
+        requests.add(request);
+    }
     @Override public List<LifecycleActionApprovalRequest> findByTicketId(String ticketId) { return requests.stream().filter(item -> item.ticketId().equals(ticketId)).sorted(Comparator.comparing(LifecycleActionApprovalRequest::createdAt)).toList(); }
     @Override public Optional<LifecycleActionApprovalRequest> find(String ticketId, String requestId) { return requests.stream().filter(item -> item.ticketId().equals(ticketId) && item.id().equals(requestId)).findFirst(); }
     @Override public Optional<LifecycleActionApprovalRequest> findById(String requestId) { return requests.stream().filter(item -> item.id().equals(requestId)).findFirst(); }

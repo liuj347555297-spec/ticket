@@ -5,6 +5,7 @@ public enum TicketQueue {
     ALL,
     MY_TODO,
     OVERDUE,
+    TODAY_DUE,
     TODAY_COMPLETED,
     MY_DONE,
     MY_REQUESTED,

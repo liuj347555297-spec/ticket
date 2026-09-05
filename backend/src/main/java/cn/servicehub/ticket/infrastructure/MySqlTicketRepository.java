@@ -184,10 +184,23 @@ public class MySqlTicketRepository implements TicketRepository {
                 if (!scope.roleCodes().isEmpty()) { sql.append(" OR wt.candidate_role IN ("); placeholders(sql, scope.roleCodes().size()); sql.append(")"); args.addAll(scope.roleCodes()); }
                 sql.append("))))");
             }
+            case TODAY_DUE -> {
+                sql.append(" AND t.status NOT IN ('RESOLVED','CLOSED','CANCELLED') AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status IN ('OPEN','CLAIMED') AND (wt.assignee_iam_user_id=? OR (wt.assignee_iam_user_id IS NULL AND (wt.candidate_iam_user_id=?");
+                args.add(scope.actorIamUserId()); args.add(scope.actorIamUserId());
+                if (!scope.roleCodes().isEmpty()) { sql.append(" OR wt.candidate_role IN ("); placeholders(sql, scope.roleCodes().size()); sql.append(")"); args.addAll(scope.roleCodes()); }
+                if (query.todayDueFrom() == null || query.todayDueTo() == null) throw new IllegalArgumentException("Today-due boundaries are required");
+                sql.append(")))) AND EXISTS (SELECT 1 FROM ticket_sla_target st WHERE st.ticket_id=t.id AND st.resolved_at IS NULL AND ((st.first_responded_at IS NULL AND st.response_due_at>=? AND st.response_due_at<?) OR (st.resolution_due_at>=? AND st.resolution_due_at<?)))");
+                args.add(Timestamp.from(query.todayDueFrom())); args.add(Timestamp.from(query.todayDueTo())); args.add(Timestamp.from(query.todayDueFrom())); args.add(Timestamp.from(query.todayDueTo()));
+            }
             case MY_DONE -> { sql.append(" AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status='COMPLETED' AND wt.assignee_iam_user_id=?)"); args.add(scope.actorIamUserId()); }
             case TODAY_COMPLETED -> { sql.append(" AND t.status IN ('RESOLVED','CLOSED') AND DATE(t.updated_at)=UTC_DATE() AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status='COMPLETED' AND wt.assignee_iam_user_id=?)"); args.add(scope.actorIamUserId()); }
             case TO_READ -> { sql.append(" AND EXISTS (SELECT 1 FROM notification n WHERE n.ticket_id=t.id AND n.recipient_iam_user_id=? AND n.read_at IS NULL)"); args.add(scope.actorIamUserId()); }
-            case OVERDUE -> sql.append(" AND EXISTS (SELECT 1 FROM ticket_sla_target st WHERE st.ticket_id=t.id AND st.risk_level='BREACHED')");
+            case OVERDUE -> {
+                sql.append(" AND EXISTS (SELECT 1 FROM ticket_workflow_task wt WHERE wt.ticket_id=t.id AND wt.status IN ('OPEN','CLAIMED') AND (wt.assignee_iam_user_id=? OR (wt.assignee_iam_user_id IS NULL AND (wt.candidate_iam_user_id=?");
+                args.add(scope.actorIamUserId()); args.add(scope.actorIamUserId());
+                if (!scope.roleCodes().isEmpty()) { sql.append(" OR wt.candidate_role IN ("); placeholders(sql, scope.roleCodes().size()); sql.append(")"); args.addAll(scope.roleCodes()); }
+                sql.append(")))) AND EXISTS (SELECT 1 FROM ticket_sla_target st WHERE st.ticket_id=t.id AND st.risk_level='BREACHED')");
+            }
         }
         if(notBlank(query.teamQueueCode())){
             if(query.teamQueueScope()==null)throw new IllegalArgumentException("Authorized team queue scope is required");

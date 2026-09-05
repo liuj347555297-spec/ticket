@@ -110,9 +110,17 @@ public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
         String actor = query.accessScope().actorIamUserId();
         return switch (query.queue()) {
             case MY_TODO -> java.util.Set.copyOf(workflows.findTodoTicketIds(actor, query.accessScope().roleCodes()));
+            case TODAY_DUE -> {
+                if (query.todayDueFrom() == null || query.todayDueTo() == null) throw new IllegalArgumentException("Today-due boundaries are required");
+                java.util.Set<String> due = java.util.Set.copyOf(slaTargets.findDueTicketIds(query.todayDueFrom(), query.todayDueTo()));
+                yield workflows.findTodoTicketIds(actor, query.accessScope().roleCodes()).stream().filter(due::contains).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            }
             case MY_DONE, TODAY_COMPLETED -> java.util.Set.copyOf(workflows.findCompletedTicketIds(actor));
             case TO_READ -> java.util.Set.copyOf(notifications.findUnreadTicketIds(actor));
-            case OVERDUE -> java.util.Set.copyOf(slaTargets.findBreachedTicketIds());
+            case OVERDUE -> {
+                java.util.Set<String> breached = java.util.Set.copyOf(slaTargets.findBreachedTicketIds());
+                yield workflows.findTodoTicketIds(actor, query.accessScope().roleCodes()).stream().filter(breached::contains).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            }
             default -> java.util.Set.of();
         };
     }
@@ -124,6 +132,8 @@ public class ThreadSafeInMemoryTicketRepository implements TicketRepository {
             case MY_REQUESTED -> ticket.requester().iamUserId().equals(actor);
             case DRAFTS -> ticket.requester().iamUserId().equals(actor) && ticket.status() == cn.servicehub.ticket.domain.TicketStatus.DRAFT;
             case MY_TODO, MY_DONE, TO_READ, OVERDUE -> queueIds.contains(ticket.id());
+            case TODAY_DUE -> queueIds.contains(ticket.id()) && ticket.status() != cn.servicehub.ticket.domain.TicketStatus.RESOLVED
+                && ticket.status() != cn.servicehub.ticket.domain.TicketStatus.CLOSED && ticket.status() != cn.servicehub.ticket.domain.TicketStatus.CANCELLED;
             case TODAY_COMPLETED -> queueIds.contains(ticket.id())
                 && (ticket.status() == cn.servicehub.ticket.domain.TicketStatus.RESOLVED || ticket.status() == cn.servicehub.ticket.domain.TicketStatus.CLOSED)
                 && java.time.LocalDate.ofInstant(ticket.updatedAt(), java.time.ZoneOffset.UTC).equals(java.time.LocalDate.now(java.time.ZoneOffset.UTC));

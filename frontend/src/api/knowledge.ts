@@ -30,6 +30,11 @@ export interface KnowledgeArticleSummary {
   sourceType?: KnowledgeSourceType
   updatedAt?: string
   serviceCatalogItems?: KnowledgeCatalogReference[]
+  favorite?: boolean
+  creatorIamUserId?: string
+  createdAt?: string
+  sourceTicketId?: string
+  currentVersionId?: string
 }
 export interface KnowledgeArticle extends KnowledgeArticleSummary {
   /** Undefined means the source is not previewable in-browser (for example a PDF). */
@@ -62,23 +67,22 @@ export interface KnowledgeImportRecord {
 }
 export interface KnowledgeImportRequest { title: string; categoryCode: string; serviceCatalogItemIds: string[]; tags: KnowledgeTag[]; file: File }
 export interface KnowledgeResult<T> { data: T; source: 'api' | 'demo' }
-interface KnowledgeDocumentWire { id: string; title: string; categoryCode: string; tags: string[]; owningOrganizationId: string; serviceCatalogItemIds: string[]; status: KnowledgePublicationStatus; currentVersionId: string; updatedAt: string }
-
-const demoArticles: KnowledgeArticle[] = [
-  { id: 'KB-ERP-TIMEOUT', title: 'ERP 查询超时排查指引', owningOrganizationId: 'ORG-LOCAL-IT', serviceCatalogItemIds: ['SC-ERP-PERFORMANCE'], summary: '先确认影响范围、查询条件和近期变更，再按受控步骤核查。', category: '业务系统 / 性能', tags: [{ code: 'TAG-ERP', name: '#ERP' }, { code: 'TAG-QUERY-TIMEOUT', name: '#查询超时' }], version: 4, publicationStatus: 'PUBLISHED', sourceType: 'MANUAL', updatedAt: '2026-08-20T10:22:00+08:00', publishedAt: '2026-08-20T10:22:00+08:00', serviceCatalogItems: [{ id: 'SC-ERP-PERFORMANCE', name: '业务系统 - 页面性能问题' }], relatedCases: [{ id: 'CASE-2026-018', title: '采购订单列表查询慢' }], relatedServiceCatalogItemIds: ['SC-ERP-PERFORMANCE'], content: '适用范围：已授权的 ERP 页面性能问题。\n\n1. 通过监控确认影响范围；2. 记录错误码与发生时间；3. 核对近期发布和查询条件；4. 未恢复时按服务目录继续建单。', attachments: [{ id: 'KBA-ERP-001', displayFileName: 'ERP性能排查清单.pdf', detectedMediaType: 'application/pdf', sizeBytes: 184320, scanState: 'SCAN_PASSED', downloadable: true }] },
-  { id: 'KB-NET-VPN', title: 'VPN 连通性自查清单', owningOrganizationId: 'ORG-LOCAL-IT', serviceCatalogItemIds: ['SC-NETWORK-FAULT'], summary: '检查网络连接、客户端状态和受控配置，未恢复时提交网络故障工单。', category: '网络服务', tags: [{ code: 'TAG-VPN', name: '#VPN' }, { code: 'TAG-NETWORK-FAULT', name: '#网络故障' }], version: 2, publicationStatus: 'PUBLISHED', sourceType: 'RESOLVED_CASE', updatedAt: '2026-08-19T15:10:00+08:00', publishedAt: '2026-08-19T15:10:00+08:00', serviceCatalogItems: [{ id: 'SC-NETWORK-FAULT', name: '网络服务 - 连通性故障' }], relatedCases: [{ id: 'CASE-2026-011', title: '分支机构 VPN 间歇断连' }], relatedServiceCatalogItemIds: ['SC-NETWORK-FAULT'], content: '请先确认网络已连接、VPN 客户端为最新受控版本，并记录提示信息。不要在知识库中粘贴密码、令牌或完整访问地址。', attachments: [] },
-]
+export interface KnowledgeVersion { id: string; versionNumber: number; detectedMediaType: string; sizeBytes: number; status: KnowledgePublicationStatus; reviewerIamUserId?: string; createdAt: string; publishedAt?: string }
+export type KnowledgeWorkbenchSection = 'MY_DRAFTS' | 'MY_SUBMISSIONS' | 'PENDING_REVIEW' | 'REVIEWED'
+export interface KnowledgeDraftInput { title: string; categoryCode: string; tags: string[]; serviceCatalogItemIds: string[]; content: string }
 
 function isUnavailable(error: unknown): boolean { return error instanceof TypeError || (error instanceof ApiError && error.status === 503) }
 const canUseDemoFallback = import.meta.env.DEV && import.meta.env.VITE_DEMO_MODE !== 'false'
-function fallback<T>(error: unknown, data: T): KnowledgeResult<T> { if (!canUseDemoFallback || !isUnavailable(error)) throw error; return { data, source: 'demo' } }
+interface KnowledgeDocumentWire { id: string; title: string; categoryCode: string; tags: string[]; owningOrganizationId: string; serviceCatalogItemIds: string[]; status: KnowledgePublicationStatus; currentVersionId: string; currentVersionNumber?: number; creatorIamUserId?: string; createdAt?: string; updatedAt: string; sourceTicketId?: string; favorite?: boolean }
+
 function fromDocument(document: KnowledgeDocumentWire): KnowledgeArticle {
   return {
     id: document.id, title: document.title, owningOrganizationId: document.owningOrganizationId, serviceCatalogItemIds: document.serviceCatalogItemIds, category: document.categoryCode,
-    tags: document.tags.map((name) => ({ name, kind: 'STANDARD' as const })), version: 1,
+    tags: document.tags.map((name) => ({ name, kind: 'STANDARD' as const })), version: document.currentVersionNumber ?? 1,
     publicationStatus: document.status, updatedAt: document.updatedAt, publishedAt: document.updatedAt,
     sourceType: 'IMPORTED', summary: '受控导入知识文档；仅已发布内容可被当前身份读取。',
     attachments: [], serviceCatalogItems: document.serviceCatalogItemIds.map((id) => ({ id, name: id })), relatedServiceCatalogItemIds: document.serviceCatalogItemIds, relatedCases: [],
+    favorite: document.favorite, creatorIamUserId: document.creatorIamUserId, createdAt: document.createdAt, sourceTicketId: document.sourceTicketId, currentVersionId: document.currentVersionId,
   }
 }
 
@@ -96,8 +100,9 @@ async function submitImport(request: KnowledgeImportRequest): Promise<KnowledgeD
 }
 
 export const knowledgeApi = {
-  async list(query: KnowledgeQuery = {}): Promise<KnowledgeResult<KnowledgeArticlePage>> { try { const documents = await apiRequest<KnowledgeDocumentWire[]>('/knowledge/documents'); const text = `${query.q ?? ''} ${query.tag ?? ''} ${query.category ?? ''}`.trim().toLocaleLowerCase(); const items = documents.map(fromDocument).filter((item) => !text || `${item.title} ${item.summary} ${item.category} ${item.tags.map((tag) => tag.name).join(' ')}`.toLocaleLowerCase().includes(text)); return { data: { items, page: 1, pageSize: 20, total: items.length }, source: 'api' } } catch (error) { const text = `${query.q ?? ''} ${query.tag ?? ''} ${query.category ?? ''}`.trim().toLocaleLowerCase(); const items = demoArticles.filter((item) => !text || `${item.title} ${item.summary} ${item.category} ${item.tags.map((tag) => tag.name).join(' ')}`.toLocaleLowerCase().includes(text)); return fallback(error, { items, page: 1, pageSize: 20, total: items.length }) } },
-  async get(articleId: string): Promise<KnowledgeResult<KnowledgeArticle>> { try { const document = await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}`); const article = fromDocument(document); try { const preview = await apiRequest<{ content: string; versionId: string; versionNumber: number }>(`/knowledge/documents/${encodeURIComponent(articleId)}/content`); article.content = preview.content; article.version = preview.versionNumber } catch (previewError) { if (!(previewError instanceof ApiError) || previewError.status !== 400) throw previewError } return { data: article, source: 'api' } } catch (error) { const article = demoArticles.find((item) => item.id === articleId); if (!article) throw error; return fallback(error, article) } },
+  async list(query: KnowledgeQuery = {}): Promise<KnowledgeResult<KnowledgeArticlePage>> { const params = new URLSearchParams(); if (query.q) params.set('q', query.q); if (query.category) params.set('category', query.category); if (query.tag) params.set('tag', query.tag); const documents = await apiRequest<KnowledgeDocumentWire[]>(`/knowledge/documents${params.size ? `?${params}` : ''}`); const items = documents.map(fromDocument); return { data: { items, page: 1, pageSize: items.length || 20, total: items.length }, source: 'api' } },
+  async get(articleId: string): Promise<KnowledgeResult<KnowledgeArticle>> { const document = await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}`); const article = fromDocument(document); try { const preview = await apiRequest<{ content: string; versionId: string; versionNumber: number }>(`/knowledge/documents/${encodeURIComponent(articleId)}/content`); article.content = preview.content; article.version = preview.versionNumber } catch (previewError) { if (!(previewError instanceof ApiError) || previewError.status !== 400) throw previewError } return { data: article, source: 'api' } },
+  async getWorkspace(articleId: string): Promise<KnowledgeArticle> { const document=await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/workspace/${encodeURIComponent(articleId)}`);const article=fromDocument(document);const preview=await apiRequest<{ content:string;versionNumber:number }>(`/knowledge/documents/${encodeURIComponent(articleId)}/content`);article.content=preview.content;article.version=preview.versionNumber;return article },
   async createImport(request: KnowledgeImportRequest): Promise<KnowledgeResult<KnowledgeImportRecord>> { try { const document = await submitImport(request); return { data: { id: document.id, title: document.title, owningOrganizationId: document.owningOrganizationId, serviceCatalogItemIds: document.serviceCatalogItemIds, tags: request.tags, status: document.status === 'PENDING_REVIEW' ? 'DRAFT_CREATED' : 'REJECTED', requestedAt: document.updatedAt, requester: '当前操作人', draftArticleId: document.id, draftVersion: 1, auditEventId: document.id }, source: 'api' } } catch (error) { if (canUseDemoFallback && isUnavailable(error)) throw new ApiError('开发演示不接收或扫描本地文件；请连接服务端后提交导入。', 503, 'DEMO_UPLOAD_BLOCKED'); throw error } },
   async feedback(articleId: string, value: KnowledgeFeedbackValue, reasonCode?: string): Promise<KnowledgeFeedbackSummary> {
     return apiRequest<KnowledgeFeedbackSummary>(`/knowledge/documents/${encodeURIComponent(articleId)}/feedback`, {
@@ -113,4 +118,13 @@ export const knowledgeApi = {
   async completeReview(articleId: string): Promise<KnowledgeDocumentWire> {
     return apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}/reviews/complete`, { method: 'POST' })
   },
+  async favorites(): Promise<KnowledgeArticleSummary[]> { return (await apiRequest<KnowledgeDocumentWire[]>('/knowledge/documents/favorites')).map(fromDocument) },
+  async setFavorite(articleId: string, value: boolean): Promise<boolean> { const result = await apiRequest<{ favorite: boolean }>(`/knowledge/documents/${encodeURIComponent(articleId)}/favorite`, { method: value ? 'PUT' : 'DELETE' }); return result.favorite },
+  async workbench(section: KnowledgeWorkbenchSection): Promise<KnowledgeArticleSummary[]> { return (await apiRequest<KnowledgeDocumentWire[]>(`/knowledge/documents/workbench?section=${encodeURIComponent(section)}`)).map(fromDocument) },
+  async versions(articleId: string): Promise<KnowledgeVersion[]> { return apiRequest<KnowledgeVersion[]>(`/knowledge/documents/${encodeURIComponent(articleId)}/versions`) },
+  async createDraft(input: KnowledgeDraftInput): Promise<KnowledgeArticleSummary> { return fromDocument(await apiRequest<KnowledgeDocumentWire>('/knowledge/documents/drafts', { method: 'POST', body: input })) },
+  async updateDraft(articleId: string, version: number, input: KnowledgeDraftInput): Promise<KnowledgeArticleSummary> { return fromDocument(await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}/draft`, { method: 'PUT', headers: { 'If-Match': `"${version}"` }, body: input })) },
+  async submitDraft(articleId: string): Promise<KnowledgeArticleSummary> { return fromDocument(await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}/submit`, { method: 'POST' })) },
+  async deleteDraft(articleId: string): Promise<void> { await apiRequest<void>(`/knowledge/documents/${encodeURIComponent(articleId)}/draft`, { method: 'DELETE' }) },
+  async publish(articleId: string, versionId: string): Promise<KnowledgeArticleSummary> { return fromDocument(await apiRequest<KnowledgeDocumentWire>(`/knowledge/documents/${encodeURIComponent(articleId)}/publish?versionId=${encodeURIComponent(versionId)}`, { method: 'POST' })) },
 }

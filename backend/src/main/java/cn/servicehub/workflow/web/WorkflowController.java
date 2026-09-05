@@ -39,6 +39,18 @@ public class WorkflowController {
     @GetMapping("/next-handler-candidates")
     java.util.List<cn.servicehub.workflow.routing.NodeAssignmentResolver.HandlerCandidate> nextHandlerCandidates(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,
         @RequestParam @Pattern(regexp = "^processing$") String targetNode) { ticketService.get(ticketId); return workflowService.nextHandlerCandidates(ticketId, targetNode); }
+    @GetMapping("/transfer-candidates")
+    java.util.List<cn.servicehub.workflow.routing.NodeAssignmentResolver.HandlerCandidate> transferCandidates(
+        @PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId) {
+        ticketService.get(ticketId);
+        return workflowService.transferCandidates(ticketId);
+    }
+    @GetMapping("/assignment-candidates")
+    java.util.List<cn.servicehub.workflow.routing.NodeAssignmentResolver.HandlerCandidate> assignmentCandidates(
+        @PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId) {
+        ticketService.get(ticketId);
+        return workflowService.assignmentCandidates(ticketId);
+    }
 
     @PostMapping("/actions")
     TicketResponse action(@PathVariable @Pattern(regexp = "^TKT-[0-9]{8}-[0-9]{6}$") String ticketId,

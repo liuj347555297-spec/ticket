@@ -7,6 +7,8 @@ import java.util.Optional;
 public interface TicketWorkflowRepository {
     void create(WorkflowInstance instance, WorkflowTask initialTask);
     Optional<WorkflowInstance> findInstance(String ticketId);
+    /** Transactional locking read used only when a write authorization depends on current assignee. */
+    Optional<WorkflowInstance> findInstanceForUpdate(String ticketId);
     boolean updateInstance(WorkflowInstance replacement, long expectedVersion);
     Optional<WorkflowTask> findOpenTask(String ticketId, String nodeKey);
     void saveTask(WorkflowTask task);

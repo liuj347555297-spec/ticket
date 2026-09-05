@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 /** Seeds synthetic MySQL data only for the local-dev profile; IAM synchronization always owns real projections. */
 @Component
 @Profile("mysql & local-dev")
+@org.springframework.core.annotation.Order(0)
 public class LocalDevelopmentDataInitializer implements ApplicationRunner {
     private final JdbcTemplate jdbc;
     public LocalDevelopmentDataInitializer(JdbcTemplate jdbc) { this.jdbc = jdbc; }

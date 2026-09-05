@@ -14,6 +14,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 @Profile("!mysql")
 public class InMemoryIamUserProjectionRepository implements IamUserProjectionRepository {
+    private final cn.servicehub.localauth.infrastructure.InMemoryLocalProjectionStore localProjections;
     private static final Instant SEED_SYNCED_AT = Instant.parse("2026-01-01T00:00:00Z");
     private final Map<String, IamUserProjection> projections = Map.of(
         "iam-u-1001", new IamUserProjection("iam-u-1001", "wang.xiaoming", "王小明", true,
@@ -28,9 +29,18 @@ public class InMemoryIamUserProjectionRepository implements IamUserProjectionRep
         "iam-u-local-admin", local("iam-u-local-admin", "local.admin", "本地开发管理员", "POS-LOCAL-ADMIN", "本地平台管理员")
     );
 
+    public InMemoryIamUserProjectionRepository() {
+        this(new cn.servicehub.localauth.infrastructure.InMemoryLocalProjectionStore());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public InMemoryIamUserProjectionRepository(cn.servicehub.localauth.infrastructure.InMemoryLocalProjectionStore localProjections) {
+        this.localProjections = localProjections;
+    }
+
     @Override
     public Optional<IamUserProjection> findActiveByIamUserId(String iamUserId) {
-        return Optional.ofNullable(projections.get(iamUserId)).filter(IamUserProjection::active);
+        return localProjections.findActive(iamUserId).or(() -> Optional.ofNullable(projections.get(iamUserId)).filter(IamUserProjection::active));
     }
 
     private IamUserProjection local(String iamUserId, String loginName, String displayName, String positionId, String positionName) {

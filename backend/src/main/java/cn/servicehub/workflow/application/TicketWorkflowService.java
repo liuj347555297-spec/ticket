@@ -46,6 +46,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.MDC;
@@ -139,30 +140,38 @@ public class TicketWorkflowService {
         Ticket ticket = ticketRepository.findById(ticketId).orElseThrow(() -> new TicketNotFoundException(ticketId));
         requireTicketAction(actor, ticket, command.action());
         if (ticket.version() != command.expectedTicketVersion()) throw new WorkflowConflictException();
-        WorkflowInstance instance = workflowRepository.findInstance(ticketId).orElseThrow(WorkflowStateException::new);
+        WorkflowInstance instance = (command.action() == WorkflowAction.TRANSFER
+            ? workflowRepository.findInstanceForUpdate(ticketId)
+            : workflowRepository.findInstance(ticketId)).orElseThrow(WorkflowStateException::new);
+        if (hasActiveLifecycleApproval(ticket, instance, command.action())) throw new WorkflowConflictException();
         Instant now = clock.instant();
+        boolean approvalRequested = requiresLifecycleApproval(ticket, command.action());
         Ticket result = switch (command.action()) {
             case CLAIM -> claim(ticket, instance, actor, now);
             case TRANSFER -> transfer(ticket, instance, actor, command.targetIamUserId(), now);
             case HANDOVER -> requestHandover(ticket, instance, actor, command.targetIamUserId(), command.reason(), now);
             case ADD_COHANDLER -> requestCoHandler(ticket, instance, actor, command.targetIamUserId(), command.reason(), now);
+            case START_PROCESSING -> returnToProcessing(ticket, instance, actor, now);
             case INTERNAL_COMMENT -> comment(ticket, actor, command.comment(), now);
             case CONTROLLED_JUMP_REQUEST -> requestJump(ticket, instance, actor, command.targetNode(), command.reason(), now);
             // These actions are intentionally requests, never direct state/assignee changes.
             // The target for ASSIGN is frozen by the server before the dedicated Flowable task starts.
-            case HOLD, ESCALATE, CANCEL, REOPEN, ASSIGN, ACCEPT, RESOLVE, CLOSE ->
+            case ACCEPT, RESOLVE, CLOSE -> approvalRequested
+                ? requestLifecycleActionApproval(ticket, instance, actor, command.action(), command.targetIamUserId(), command.reason(), now)
+                : advanceLifecycle(ticket, instance, actor, command, now);
+            case HOLD, ESCALATE, CANCEL, REOPEN, ASSIGN ->
                 requestLifecycleActionApproval(ticket, instance, actor, command.action(), command.targetIamUserId(), command.reason(), now);
             case RESUME -> resume(ticket, instance, actor, now);
             default -> advanceLifecycle(ticket, instance, actor, command, now);
         };
         // Approval submission has no state transition and therefore must not recalculate or
         // persist a misleading SLA state. The approved execution path performs this exactly once.
-        if (!isLifecycleApprovalAction(command.action())) slaService.onTicketStateChanged(ticket, result);
-        record(actor, isLifecycleApprovalAction(command.action()) ? "LIFECYCLE_APPROVAL_REQUESTED" : "WORKFLOW_" + command.action().name(), ticketId,
+        if (!approvalRequested) slaService.onTicketStateChanged(ticket, result);
+        record(actor, approvalRequested ? "LIFECYCLE_APPROVAL_REQUESTED" : "WORKFLOW_" + command.action().name(), ticketId,
             Map.of("from", ticket.status().name(), "to", result.status().name(), "action", command.action().name()));
         // A pending lifecycle request must not masquerade as a completed assignment or state
         // change. Its eventual committed notification is emitted after Flowable approval below.
-        if (!isLifecycleApprovalAction(command.action())) {
+        if (!approvalRequested) {
             notifications.workflowAction(result, command.action().name(), actor.iamUserId(), notificationTarget(command));
         }
         return result;
@@ -184,18 +193,75 @@ public class TicketWorkflowService {
         CurrentUser actor = currentUserProvider.requireCurrentUser();
         Ticket ticket = ticketRepository.findById(ticketId).orElseThrow(() -> new TicketNotFoundException(ticketId));
         WorkflowInstance instance = workflowRepository.findInstance(ticketId).orElseThrow(WorkflowStateException::new);
+        List<WorkflowTask> tasks = workflowRepository.findTasks(ticketId);
+        AcceptanceQueueReadModel acceptanceQueue = acceptanceQueue(instance, tasks);
         var approvalRequests = workflowRepository.findJumpRequests(ticketId);
-        return new WorkflowOverview(instance, workflowRepository.findTasks(ticketId), workflowRepository.findComments(ticketId),
+        return new WorkflowOverview(instance, tasks, workflowRepository.findComments(ticketId),
             availableActions(actor, ticket, instance), workflowRepository.findEvents(ticketId), workflowRepository.findActiveParticipants(ticketId),
             approvalRequests, approvalRequests.stream().flatMap(request -> workflowRepository.findApprovalDecisions(ticketId, request.id()).stream()).toList(),
             controlledJumpActions(actor, ticket, instance), workflowRepository.findHandoverRequests(ticketId), workflowRepository.findCoHandlerRequests(ticketId),
-            lifecycleApprovalRepository.findByTicketId(ticketId).stream().map(LifecycleActionApprovalSummary::from).toList(), nodeAssignments.snapshots(ticketId));
+            lifecycleApprovalRepository.findByTicketId(ticketId).stream().map(LifecycleActionApprovalSummary::from).toList(), nodeAssignments.snapshots(ticketId),
+            acceptanceQueue.candidates(), acceptanceQueue.candidates().size());
+    }
+
+    /**
+     * A routing snapshot remains append-only evidence, but it is only exposed as a current
+     * candidate list while its exact task is open and the workflow still has no primary handler.
+     * Missing or disabled IAM projections are omitted instead of leaking stale directory data.
+     */
+    private AcceptanceQueueReadModel acceptanceQueue(WorkflowInstance instance, List<WorkflowTask> tasks) {
+        if (instance.primaryAssigneeIamUserId() != null) return AcceptanceQueueReadModel.empty();
+        WorkflowTask active = tasks.stream()
+            .filter(task -> task.nodeKey().equals(instance.currentNode()))
+            .filter(task -> task.status() == WorkflowTaskStatus.OPEN)
+            .filter(task -> task.assigneeIamUserId() == null && task.queueCode() != null)
+            .max(Comparator.comparing(WorkflowTask::updatedAt).thenComparing(WorkflowTask::id))
+            .orElse(null);
+        if (active == null) return AcceptanceQueueReadModel.empty();
+        WorkflowQueueRoutingSnapshot snapshot = supportQueues.findRoutingSnapshots(instance.ticketId()).stream()
+            .filter(item -> item.workflowTaskId().equals(active.id()))
+            .filter(item -> "SHARED_QUEUE".equals(item.assignment().mode()))
+            .max(Comparator.comparing(WorkflowQueueRoutingSnapshot::capturedAt).thenComparing(WorkflowQueueRoutingSnapshot::id))
+            .orElse(null);
+        if (snapshot == null || !active.queueCode().equals(snapshot.queueCode())) return AcceptanceQueueReadModel.empty();
+        List<AcceptanceCandidate> candidates = snapshot.candidateIamUserIds().stream()
+            .flatMap(id -> iamUsers.findActiveByIamUserId(id)
+                .filter(user -> user.active() && id.equals(user.iamUserId())).stream())
+            .filter(user -> user.displayName() != null && !user.displayName().isBlank())
+            .map(user -> new AcceptanceCandidate(user.iamUserId(), user.displayName(),
+                user.organization() == null ? null : user.organization().name(),
+                user.positions().stream().filter(cn.servicehub.iam.domain.PositionSummary::primary).findFirst()
+                    .or(() -> user.positions().stream().findFirst()).map(cn.servicehub.iam.domain.PositionSummary::name).orElse(null)))
+            .sorted(Comparator.comparing(AcceptanceCandidate::displayName).thenComparing(AcceptanceCandidate::iamUserId))
+            .toList();
+        return candidates.isEmpty() ? AcceptanceQueueReadModel.empty() : new AcceptanceQueueReadModel(candidates);
+    }
+
+    private record AcceptanceQueueReadModel(List<AcceptanceCandidate> candidates) {
+        private static AcceptanceQueueReadModel empty() { return new AcceptanceQueueReadModel(List.of()); }
     }
     public List<NodeAssignmentResolver.HandlerCandidate> nextHandlerCandidates(String ticketId, String targetNode) {
         CurrentUser actor = currentUserProvider.requireCurrentUser(); Ticket ticket = ticketRepository.findById(ticketId).orElseThrow(() -> new TicketNotFoundException(ticketId));
         WorkflowInstance instance = workflowRepository.findInstance(ticketId).orElseThrow(WorkflowStateException::new);
         if (!directAcceptRouting || !"processing".equals(targetNode) || ticket.status() != TicketStatus.PENDING_ACCEPTANCE || !actor.iamUserId().equals(instance.primaryAssigneeIamUserId()) || !nodeAssignments.requiresPreviousHandlerSelection(ticket.serviceCatalogItem().id(), targetNode)) throw new AccessDeniedException("Next-handler candidates are not authorized");
         return nodeAssignments.candidates(ticket.id(), ticket.serviceCatalogItem().id(), targetNode, ticket.requester().iamUserId());
+    }
+    public List<NodeAssignmentResolver.HandlerCandidate> transferCandidates(String ticketId) {
+        CurrentUser actor = currentUserProvider.requireCurrentUser();
+        Ticket ticket = ticketRepository.findById(ticketId).orElseThrow(() -> new TicketNotFoundException(ticketId));
+        WorkflowInstance instance = workflowRepository.findInstance(ticketId).orElseThrow(WorkflowStateException::new);
+        assertPrimaryOrManager(actor, instance);
+        if (ticket.status() != TicketStatus.IN_PROGRESS || !"processing".equals(instance.currentNode())) throw new WorkflowStateException();
+        return nodeAssignments.candidates(ticket.id(), ticket.serviceCatalogItem().id(), instance.currentNode(), ticket.requester().iamUserId()).stream()
+            .filter(candidate -> !candidate.iamUserId().equals(instance.primaryAssigneeIamUserId()))
+            .toList();
+    }
+    public List<NodeAssignmentResolver.HandlerCandidate> assignmentCandidates(String ticketId) {
+        CurrentUser actor = currentUserProvider.requireCurrentUser();
+        Ticket ticket = ticketRepository.findById(ticketId).orElseThrow(() -> new TicketNotFoundException(ticketId));
+        assertSupport(actor);
+        if (ticket.status() != TicketStatus.PENDING_ASSIGNMENT) throw new WorkflowStateException();
+        return nodeAssignments.candidates(ticket.id(), ticket.serviceCatalogItem().id(), "accept", ticket.requester().iamUserId());
     }
 
     /**
@@ -506,7 +572,7 @@ public class TicketWorkflowService {
                 if (primary) add(result, WorkflowAction.ACCEPT, "受理", directAcceptRouting && nodeAssignments.requiresPreviousHandlerSelection(ticket.serviceCatalogItem().id(), "processing"));
             }
             case IN_PROGRESS -> {
-                if (handler) add(result, WorkflowAction.REQUEST_USER_FEEDBACK, "待用户反馈", false);
+                if (handler) add(result, WorkflowAction.REQUEST_USER_FEEDBACK, "解决并提交验证", false);
                 if (primary || manager) {
                     add(result, WorkflowAction.TRANSFER, "转办", true);
                     add(result, WorkflowAction.ADD_COHANDLER, "添加协办", true);
@@ -515,8 +581,13 @@ public class TicketWorkflowService {
                 }
                 if (support) add(result, WorkflowAction.ESCALATE, "升级", false);
             }
-            case PENDING_USER_FEEDBACK -> { if (handler) add(result, WorkflowAction.RESOLVE, "解决", false); }
-            case RESOLVED -> { if (requester || handler) add(result, WorkflowAction.CLOSE, "关闭", false); }
+            case PENDING_USER_FEEDBACK -> {
+                if (requester || handler) {
+                    add(result, WorkflowAction.RESOLVE, "已解决，进入关闭", false);
+                    add(result, WorkflowAction.START_PROCESSING, "未解决，退回处理", false);
+                }
+            }
+            case RESOLVED -> { if (requester || handler) add(result, WorkflowAction.CLOSE, "确认关闭", false); }
             case ON_HOLD -> { if (primary || manager) add(result, WorkflowAction.RESUME, "恢复", false); }
             case CLOSED -> { if (requester || support) add(result, WorkflowAction.REOPEN, "重开", false); }
             default -> { }
@@ -525,6 +596,11 @@ public class TicketWorkflowService {
         if (support && ticket.status() != TicketStatus.CLOSED && ticket.status() != TicketStatus.CANCELLED) {
             add(result, WorkflowAction.INTERNAL_COMMENT, "内部评论", false);
         }
+        Set<String> pendingActions = lifecycleApprovalRepository.findByTicketId(ticket.id()).stream()
+            .filter(request -> Set.of("PENDING_APPROVAL", "EXPIRING").contains(request.status()))
+            .filter(request -> request.sourceTicketVersion() == ticket.version() && request.sourceWorkflowVersion() == instance.version())
+            .map(request -> request.action().name()).collect(java.util.stream.Collectors.toSet());
+        result.removeIf(action -> pendingActions.contains(action.code()));
         return java.util.List.copyOf(result);
     }
 
@@ -572,7 +648,12 @@ public class TicketWorkflowService {
     }
 
     private Ticket transfer(Ticket ticket, WorkflowInstance instance, CurrentUser actor, String target, Instant now) {
-        assertPrimaryOrManager(actor, instance); requireActiveSupportTarget(target); updateInstanceAssignee(instance, target, now); workflowRepository.replacePrimaryParticipant(ticket.id(), snapshot(target, now), now);
+        assertPrimaryOrManager(actor, instance);
+        if (ticket.status() != TicketStatus.IN_PROGRESS || !"processing".equals(instance.currentNode())) throw new WorkflowStateException();
+        boolean eligibleTarget = nodeAssignments.candidates(ticket.id(), ticket.serviceCatalogItem().id(), instance.currentNode(), ticket.requester().iamUserId()).stream()
+            .anyMatch(candidate -> candidate.iamUserId().equals(target));
+        if (!eligibleTarget || target.equals(instance.primaryAssigneeIamUserId())) throw new IllegalArgumentException("Transfer target is outside the active routing pool");
+        updateInstanceAssignee(instance, target, now); workflowRepository.replacePrimaryParticipant(ticket.id(), snapshot(target, now), now);
         workflowRepository.findOpenTask(ticket.id(), instance.currentNode()).ifPresent(open -> workflowRepository.saveTask(new WorkflowTask(open.id(), open.ticketId(), open.engineTaskId(), open.nodeKey(), WorkflowTaskStatus.CLAIMED, open.candidateRole(), target, target, CollaborationRole.PRIMARY, open.version() + 1, open.createdAt(), now,open.queueCode())));
         return ticket;
     }
@@ -633,7 +714,12 @@ public class TicketWorkflowService {
 
     private Ticket requestLifecycleActionApproval(Ticket ticket, WorkflowInstance instance, CurrentUser actor, WorkflowAction action,
                                                   String requestedTargetIamUserId, String reason, Instant now) {
-        if (validText(reason, 1000) == null) throw new IllegalArgumentException("Lifecycle action reason is required");
+        String effectiveReason = validText(reason, 1000);
+        if (effectiveReason == null) effectiveReason = switch (action) {
+            case ACCEPT -> "受理工单";
+            case CLOSE -> "确认关闭工单";
+            default -> throw new IllegalArgumentException("Lifecycle action reason is required");
+        };
         String frozenTargetIamUserId = switch (action) {
             case HOLD -> { assertPrimaryOrManager(actor, instance); if (ticket.status() != TicketStatus.IN_PROGRESS) throw new WorkflowStateException(); yield null; }
             case ESCALATE -> { assertSupport(actor); if (ticket.status() == TicketStatus.CLOSED || ticket.status() == TicketStatus.CANCELLED) throw new WorkflowStateException(); yield null; }
@@ -642,7 +728,10 @@ public class TicketWorkflowService {
             case ASSIGN -> {
                 assertSupport(actor);
                 if (ticket.status() != TicketStatus.PENDING_ASSIGNMENT) throw new WorkflowStateException();
-                yield requireActiveSupportTargetAndReturn(requestedTargetIamUserId);
+                boolean eligibleTarget = nodeAssignments.candidates(ticket.id(), ticket.serviceCatalogItem().id(), "accept", ticket.requester().iamUserId()).stream()
+                    .anyMatch(candidate -> candidate.iamUserId().equals(requestedTargetIamUserId));
+                if (!eligibleTarget) throw new IllegalArgumentException("Assignment target is outside the active routing pool");
+                yield requestedTargetIamUserId;
             }
             case ACCEPT -> {
                 if (ticket.status() != TicketStatus.PENDING_ACCEPTANCE || !actor.iamUserId().equals(instance.primaryAssigneeIamUserId())) throw new AccessDeniedException("Only the current primary handler may accept this ticket");
@@ -666,7 +755,7 @@ public class TicketWorkflowService {
         String requestId = UUID.randomUUID().toString();
         var definition = lifecycleApprovalEngine.resolveDefinition();
         var engine = lifecycleApprovalEngine.start(requestId, ticket.id(), actor.iamUserId(), definition, policy.candidateIamUserIds(), policy.policy().decisionMode(), policy.requiredApprovalCount());
-        lifecycleApprovalRepository.save(new LifecycleActionApprovalRequest(requestId, ticket.id(), action, actor.iamUserId(), reason.trim(), frozenTargetIamUserId, ticket.version(), instance.version(),
+        lifecycleApprovalRepository.save(new LifecycleActionApprovalRequest(requestId, ticket.id(), action, actor.iamUserId(), effectiveReason.trim(), frozenTargetIamUserId, ticket.version(), instance.version(),
             engine.instanceId(), definition.processKey(), definition.processDefinitionId(), definition.version(), policy.policy().id(), policy.policy().version(), policy.policy().decisionMode(), policy.requiredApprovalCount(),
             policy.policy().timeoutPolicyVersion(), policy.policy().escalationPolicyVersion(), policy.dueAt(), policy.policy().candidateRoles(), policy.candidateIamUserIds(), "PENDING_APPROVAL", null, null, null, null, now));
         return ticket;
@@ -718,6 +807,37 @@ public class TicketWorkflowService {
     private boolean isLifecycleApprovalAction(WorkflowAction action) {
         return Set.of(WorkflowAction.HOLD, WorkflowAction.ESCALATE, WorkflowAction.CANCEL, WorkflowAction.REOPEN,
             WorkflowAction.ASSIGN, WorkflowAction.ACCEPT, WorkflowAction.RESOLVE, WorkflowAction.CLOSE).contains(action);
+    }
+
+    private boolean requiresLifecycleApproval(Ticket ticket, WorkflowAction action) {
+        if (!isLifecycleApprovalAction(action)) return false;
+        return !Set.of(WorkflowAction.ACCEPT, WorkflowAction.RESOLVE, WorkflowAction.CLOSE).contains(action)
+            || lifecycleApprovalPolicyResolver.findApplicable(ticket, action).isPresent();
+    }
+
+    private boolean hasActiveLifecycleApproval(Ticket ticket, WorkflowInstance instance, WorkflowAction action) {
+        if (!isLifecycleApprovalAction(action)) return false;
+        return lifecycleApprovalRepository.findByTicketId(ticket.id()).stream()
+            .anyMatch(request -> request.action() == action
+                && request.sourceTicketVersion() == ticket.version()
+                && request.sourceWorkflowVersion() == instance.version()
+                && Set.of("PENDING_APPROVAL", "EXPIRING").contains(request.status()));
+    }
+
+    private Ticket returnToProcessing(Ticket ticket, WorkflowInstance instance, CurrentUser actor, Instant now) {
+        boolean requester = actor.iamUserId().equals(ticket.requester().iamUserId());
+        if (ticket.status() != TicketStatus.PENDING_USER_FEEDBACK) throw new WorkflowStateException();
+        if (!requester) assertHandler(actor, ticket, instance, WorkflowAction.START_PROCESSING);
+        WorkflowEngineInstance engine = workflowEngine.moveControlledActivity(instance.engineInstanceId(), "user_feedback", "processing");
+        finishOpenTask(ticket.id(), "user_feedback", actor.iamUserId(), now);
+        if (!ticketRepository.updateStatus(ticket.id(), ticket.version(), TicketStatus.IN_PROGRESS, now)) throw new WorkflowConflictException();
+        WorkflowInstance changed = new WorkflowInstance(ticket.id(), engine.instanceId(), engine.nodeKey(), TicketStatus.IN_PROGRESS, null,
+            instance.escalationLevel(), instance.primaryAssigneeIamUserId(), engine.processDefinitionId(), engine.processDefinitionVersion(),
+            instance.version() + 1, instance.createdAt(), now);
+        if (!workflowRepository.updateInstance(changed, instance.version())) throw new WorkflowConflictException();
+        if (engine.taskId() != null) workflowRepository.saveTask(new WorkflowTask(UUID.randomUUID().toString(), ticket.id(), engine.taskId(), engine.nodeKey(),
+            WorkflowTaskStatus.OPEN, "ROLE_FIRST_LINE_SUPPORT", instance.primaryAssigneeIamUserId(), null, null, 0, now, now, null));
+        return ticketRepository.findById(ticket.id()).orElseThrow(() -> new TicketNotFoundException(ticket.id()));
     }
 
     private Ticket hold(Ticket ticket, WorkflowInstance instance, CurrentUser actor, String reason, Instant now) {
@@ -772,7 +892,7 @@ public class TicketWorkflowService {
             Map.of("requesterIamUserId", ticket.requester().iamUserId(), "serviceCatalogItemId", ticket.serviceCatalogItem().id())));
     }
     private boolean isControlledJumpManager(CurrentUser actor) { return actor.authorities().contains("ROLE_SERVICE_MANAGER") || actor.authorities().contains("ROLE_PLATFORM_ADMIN"); }
-    private void assertHandler(CurrentUser actor, Ticket ticket, WorkflowInstance instance, WorkflowAction action) { if (action == WorkflowAction.CLOSE && actor.iamUserId().equals(ticket.requester().iamUserId())) return; if (action == WorkflowAction.CLASSIFY || action == WorkflowAction.ASSIGN) { assertSupport(actor); return; } if (action == WorkflowAction.ACCEPT && actor.iamUserId().equals(instance.primaryAssigneeIamUserId())) return; if (instance.primaryAssigneeIamUserId() != null && (actor.iamUserId().equals(instance.primaryAssigneeIamUserId()) || workflowRepository.hasCoHandler(ticket.id(), actor.iamUserId()) || hasActiveDelegation(ticket, instance, actor, clock.instant()))) return; throw new AccessDeniedException("Only a server-resolved handler may process this ticket"); }
+    private void assertHandler(CurrentUser actor, Ticket ticket, WorkflowInstance instance, WorkflowAction action) { if ((action == WorkflowAction.RESOLVE || action == WorkflowAction.CLOSE) && actor.iamUserId().equals(ticket.requester().iamUserId())) return; if (action == WorkflowAction.CLASSIFY || action == WorkflowAction.ASSIGN) { assertSupport(actor); return; } if (action == WorkflowAction.ACCEPT && actor.iamUserId().equals(instance.primaryAssigneeIamUserId())) return; if (instance.primaryAssigneeIamUserId() != null && (actor.iamUserId().equals(instance.primaryAssigneeIamUserId()) || workflowRepository.hasCoHandler(ticket.id(), actor.iamUserId()) || hasActiveDelegation(ticket, instance, actor, clock.instant()))) return; throw new AccessDeniedException("Only a server-resolved handler may process this ticket"); }
     private boolean hasActiveDelegation(Ticket ticket, WorkflowInstance instance, CurrentUser actor, Instant now) { return hasSupport(actor) && instance.primaryAssigneeIamUserId() != null && workflowRepository.hasActiveDelegation(ticket.id(), instance.primaryAssigneeIamUserId(), actor.iamUserId(), now); }
     private void assertPrimaryOrManager(CurrentUser actor, WorkflowInstance instance) { if (hasSupport(actor) && (actor.iamUserId().equals(instance.primaryAssigneeIamUserId()) || actor.authorities().contains("ROLE_SERVICE_MANAGER") || actor.authorities().contains("ROLE_PLATFORM_ADMIN"))) return; throw new AccessDeniedException("Only primary handler or manager may perform this action"); }
     private void assertSupport(CurrentUser actor) { if (!hasSupport(actor)) throw new AccessDeniedException("Support role is required"); }

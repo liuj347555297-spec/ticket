@@ -9,15 +9,17 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Component;
+import cn.servicehub.localauth.domain.LocalAccountRepository;
 
 @Component
 public class SecurityContextCurrentUserProvider implements CurrentUserProvider {
     private final PlatformAuthorizationResolver authorizations;
     private final SecurityProperties securityProperties;
     private final Environment environment;
+    private final LocalAccountRepository localAccounts;
     public SecurityContextCurrentUserProvider(PlatformAuthorizationResolver authorizations, SecurityProperties securityProperties,
-                                              Environment environment) {
-        this.authorizations = authorizations; this.securityProperties = securityProperties; this.environment = environment;
+                                              Environment environment, LocalAccountRepository localAccounts) {
+        this.authorizations = authorizations; this.securityProperties = securityProperties; this.environment = environment; this.localAccounts = localAccounts;
     }
     @Override
     public Optional<CurrentUser> currentUser() {
@@ -27,6 +29,14 @@ public class SecurityContextCurrentUserProvider implements CurrentUserProvider {
         }
         if (authentication instanceof VerifiedIamAuthentication verified) {
             return Optional.of(authorizations.resolve(verified.getName(), verified.source()));
+        }
+        if (authentication instanceof VerifiedLocalAuthentication verified) {
+            var account = localAccounts.findById(verified.getName()).orElseThrow(() -> new AccessDeniedException("Local account is unavailable"));
+            if (!account.enabled() || account.sessionVersion() != verified.sessionVersion()
+                || (account.lockedUntil() != null && account.lockedUntil().isAfter(java.time.Instant.now()))) {
+                throw new AccessDeniedException("Local account session is no longer valid");
+            }
+            return Optional.of(authorizations.resolve(verified.getName(), "LOCAL_ACCOUNT"));
         }
         if (!securityProperties.allowDirectTestIdentities() || environment.acceptsProfiles(Profiles.of("prod"))) {
             throw new AccessDeniedException("A verified IAM authentication context is required");

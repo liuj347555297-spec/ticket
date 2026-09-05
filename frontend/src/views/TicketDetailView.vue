@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, RouterLink, useRoute } from 'vue-router'
 import { ApiError } from '@/api/client'
-import { ticketApi, type AttachmentScanState, type ControlledJumpPreflight, type NextHandlerCandidate, type Ticket, type TicketActionCode, type TicketAttachment, type TicketAvailableAction, type TicketComment, type TicketLifecycleAction, type TicketRelation, type TicketRelationType, type TicketSla, type TicketSlaResponse, type TicketStatus, type TicketTimelineEvent, type TicketType, type TicketWorkAction } from '@/api/tickets'
+import { ticketApi, type AcceptanceCandidate, type AttachmentScanState, type ControlledJumpPreflight, type NextHandlerCandidate, type Ticket, type TicketActionCode, type TicketAttachment, type TicketAvailableAction, type TicketComment, type TicketLifecycleAction, type TicketRelation, type TicketRelationType, type TicketSla, type TicketSlaResponse, type TicketStatus, type TicketTimelineEvent, type TicketType, type TicketWorkAction } from '@/api/tickets'
 import { notificationApi, type TicketNotificationSummary } from '@/api/notifications'
 import { useSessionStore } from '@/stores/session'
 import TicketProcessingForm from '@/components/TicketProcessingForm.vue'
@@ -16,6 +16,8 @@ const route = useRoute()
 const session = useSessionStore()
 const processingForm = ref<InstanceType<typeof TicketProcessingForm>>()
 const processingDirty = ref(false)
+const processingDetailsEditable = ref(false)
+const processingDetailsSaving = ref(false)
 const activeDetailTab = ref('basic')
 const detailTabs = [{ code: 'basic', label: '基础与处理' }, { code: 'relations', label: '关联工单' }, { code: 'workflow', label: '流程图' }, { code: 'approvals', label: '审批记录' }, { code: 'collaboration', label: '协作记录' }, { code: 'history', label: '流转记录' }]
 let contextGeneration = 0
@@ -37,7 +39,9 @@ const nextHandlerCandidates = ref<NextHandlerCandidate[]>([])
 const notificationSummary = ref<TicketNotificationSummary | null>(null)
 const attachments = ref<TicketAttachment[]>([])
 const workflowTask = ref<{ nodeKey: string; status: string; candidateRole?: string; candidateIamUserId?: string; assigneeIamUserId?: string } | null>(null)
-const assignmentSnapshots = ref<{ nodeKey: string; mode: 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS'; candidateRoles: string[]; policyVersion: number; selectedIamUserId?: string; capturedAt: string }[]>([])
+const assignmentSnapshots = ref<{ nodeKey: string; mode: 'SYSTEM_RANDOM' | 'PREVIOUS_HANDLER_SELECTS' | 'SHARED_QUEUE'; candidateRoles: string[]; policyVersion: number; selectedIamUserId?: string; capturedAt: string }[]>([])
+const acceptanceCandidates = ref<AcceptanceCandidate[]>([])
+const acceptanceCandidateCount = ref(0)
 const workflowParticipants = ref<{ role: 'PRIMARY' | 'COLLABORATOR'; identity: import('@/api/tickets').IdentitySnapshot; assignedAt: string }[]>([])
 const approvalRequests = ref<{ id: string; applicantIamUserId: string; sourceNode: string; targetNode: string; reason: string; status: string; createdAt: string; approverIamUserId?: string; decidedAt?: string; executorIamUserId?: string; executionStartedAt?: string; executedAt?: string; executedFromNode?: string; executedToNode?: string; executionFailureReason?: string; approvalPolicy?: { processKey: string; processDefinitionId: string; processVersion: number; candidateRoles: string[]; decisionMode: string; timeoutPolicyVersion: string; escalationPolicyVersion: string; capturedAt: string } }[]>([])
 const approvalDecisions = ref<{ id: string; approvalRequestId: string; engineTaskId?: string; approverIamUserId: string; decision: 'APPROVED' | 'REJECTED'; reason: string; decidedAt: string }[]>([])
@@ -64,19 +68,20 @@ const showRelation = ref(false)
 const relationSubmitting = ref(false)
 const relationError = ref('')
 const relationForm = ref<{ targetTicketId: string; relationType: TicketRelationType }>({ targetTicketId: '', relationType: 'RELATED' })
-const busy = computed(() => actionSubmitting.value || controlledJumpSubmitting.value || Boolean(handoverSubmitting.value) || Boolean(coHandlerSubmitting.value) || Boolean(lifecycleApprovalSubmitting.value) || relationSubmitting.value)
+const busy = computed(() => processingDetailsSaving.value || actionSubmitting.value || controlledJumpSubmitting.value || Boolean(handoverSubmitting.value) || Boolean(coHandlerSubmitting.value) || Boolean(lifecycleApprovalSubmitting.value) || relationSubmitting.value)
 
 const typeNames: Record<TicketType, string> = { INCIDENT: '故障报修', SERVICE_REQUEST: '服务请求', ACCESS_REQUEST: '账号权限', PROBLEM: '问题管理', CHANGE: '变更申请' }
 const statusNames: Record<TicketStatus, string> = { DRAFT: '草稿', SUBMITTED: '已提交', PENDING_CLASSIFICATION: '待分类', PENDING_ASSIGNMENT: '待分派', PENDING_ACCEPTANCE: '待受理', IN_PROGRESS: '处理中', RESOLVED: '已解决', PENDING_USER_FEEDBACK: '待用户反馈', CLOSED: '已关闭', CANCELLED: '已撤销', ON_HOLD: '已挂起' }
 const actionLabels: Record<TicketActionCode, string> = {
-  CLASSIFY: '分类', ASSIGN: '分派', ACCEPT: '受理', REQUEST_USER_FEEDBACK: '待用户反馈', RESOLVE: '解决', CLOSE: '关闭', REOPEN: '重开', CANCEL: '撤销', HOLD: '挂起', RESUME: '恢复', ESCALATE: '升级',
+  CLASSIFY: '分类', ASSIGN: '分派', ACCEPT: '受理', START_PROCESSING: '未解决，退回处理', REQUEST_USER_FEEDBACK: '解决并提交验证', RESOLVE: '已解决，进入关闭', CLOSE: '确认关闭', REOPEN: '重开', CANCEL: '撤销', HOLD: '挂起', RESUME: '恢复', ESCALATE: '升级',
   TRANSFER: '转办', ADD_COHANDLER: '添加协办', CLAIM: '抢单', HANDOVER: '交接班', INTERNAL_COMMENT: '内部评论', CONTROLLED_JUMP_REQUEST: '受控跳转申请',
 }
-const lifecycleCodes: TicketLifecycleAction[] = ['CLASSIFY', 'ASSIGN', 'ACCEPT', 'REQUEST_USER_FEEDBACK', 'RESOLVE', 'CLOSE', 'REOPEN', 'CANCEL', 'HOLD', 'RESUME', 'ESCALATE']
+const lifecycleCodes: TicketLifecycleAction[] = ['CLASSIFY', 'ASSIGN', 'ACCEPT', 'START_PROCESSING', 'REQUEST_USER_FEEDBACK', 'RESOLVE', 'CLOSE', 'REOPEN', 'CANCEL', 'HOLD', 'RESUME', 'ESCALATE']
 const targetRequiredCodes: TicketWorkAction[] = ['TRANSFER', 'ADD_COHANDLER', 'HANDOVER']
 const demoComments: TicketComment[] = [{ id: 'demo-comment-001', visibility: 'INTERNAL', author: { iamUserId: 'iam-u-000063', displayName: '李工', organizationName: '数字化运营中心 / 应用运维组', positionName: '应用运维工程师', capturedAt: '2026-08-19T09:28:00+08:00' }, content: '已关联性能监控检查项，待确认慢查询与缓存命中情况。', createdAt: '2026-08-19T09:30:00+08:00', auditEventId: 'AUD-20260819-004' }]
 
 const availableActions = computed(() => ticket.value?.availableActions ?? [])
+const footerActions = computed(() => availableActions.value.filter((item) => item.code !== 'INTERNAL_COMMENT'))
 const workActions = computed(() => availableActions.value.filter((item) => !lifecycleCodes.includes(item.code as TicketLifecycleAction) && item.code !== 'INTERNAL_COMMENT'))
 const collaborationActions = computed(() => workActions.value.filter((item) => ['TRANSFER', 'ADD_COHANDLER', 'HANDOVER', 'CLAIM'].includes(item.code)))
 const canComment = computed(() => availableActions.value.some((item) => item.code === 'INTERNAL_COMMENT' && !item.disabledReason))
@@ -85,6 +90,10 @@ const needsTarget = computed(() => selectedAction.value?.requiresTarget ?? targe
 const isComment = computed(() => selectedAction.value?.code === 'INTERNAL_COMMENT')
 const requiresReason = computed(() => Boolean(selectedAction.value && processingReasonActions.includes(selectedAction.value.code)))
 const participants = computed(() => workflowParticipants.value.length ? workflowParticipants.value : ticket.value?.participants?.length ? ticket.value.participants : ticket.value?.assignee ? [{ role: 'PRIMARY' as const, identity: ticket.value.assignee, assignedAt: ticket.value.updatedAt ?? ticket.value.createdAt }] : [])
+const currentAssignee = computed(() => participants.value.find((participant) => participant.role === 'PRIMARY')?.identity ?? ticket.value?.assignee)
+const currentAssigneeLabel = computed(() => currentAssignee.value
+  ? currentAssignee.value.iamUserId === session.currentUser?.iamUserId ? `我（${currentAssignee.value.displayName}）` : currentAssignee.value.displayName
+  : '待后端分派')
 const timeline = computed<TicketTimelineEvent[]>(() => {
   if (!ticket.value) return []
   if (ticket.value.timeline?.length) return ticket.value.timeline
@@ -143,7 +152,8 @@ function downloadAttachment(attachmentId: string): void { if (!ticket.value) ret
 function actionHelp(action?: TicketActionCode): string {
   if (action === 'INTERNAL_COMMENT') return '处理意见以纯文本保存，仅内部协作人员可见；请勿填写密码、令牌等敏感数据。'
   if (action === 'CLAIM') return '抢单时不指定处理人，服务端会重新校验候选资格。'
-  if (action === 'ASSIGN' || action === 'ACCEPT' || action === 'RESOLVE' || action === 'CLOSE') return '提交后仅创建独立 Flowable 审批；审批通过且工单版本未变化时，服务端才会执行该动作。'
+  if (action === 'ACCEPT' || action === 'RESOLVE' || action === 'CLOSE') return '日常动作会直接推进；若管理员已发布匹配的审批策略，服务端会返回待审批且不提前改变状态。'
+  if (action === 'ASSIGN') return '提交后创建独立 Flowable 审批；审批通过且工单版本未变化时才会分派。'
   if (action && targetRequiredCodes.includes(action as TicketWorkAction)) return '目标人员只是候选人；服务端会校验其 IAM 投影、班次、技能和数据范围。'
   return '状态、流程节点、审批、SLA 和最终处理人均由服务端规则决定。'
 }
@@ -208,6 +218,10 @@ async function openAction(action: TicketAvailableAction): Promise<void> {
   if (!ticket.value || busy.value || source.value === 'demo') return
   const allowed = availableActions.value.find((item) => item.code === action.code)
   if (!allowed || allowed.disabledReason) return
+  if (processingDirty.value && processingDetailsEditable.value && allowed.code !== 'CLAIM') {
+    const saved = await processingForm.value?.saveDetails()
+    if (!saved) { activeDetailTab.value = 'basic'; return }
+  }
   const draft = processingForm.value?.prepareAction(allowed.code)
   if (!draft) { activeDetailTab.value = 'basic'; return }
   const sequence = ++actionOpenSequence
@@ -217,12 +231,26 @@ async function openAction(action: TicketAvailableAction): Promise<void> {
   actionForm.value = { targetIamUserId: '', targetNode: '', reason: draft.reason, detail: draft.detail }
   actionError.value = ''; actionNotice.value = ''; nextHandlerCandidates.value = []
   void nextTick(() => document.querySelector<HTMLElement>('.action-modal input, .action-modal textarea, .action-modal select')?.focus())
-  if (allowed.requiresTarget && allowed.code === 'ACCEPT') {
+  if (allowed.requiresTarget || targetRequiredCodes.includes(allowed.code as TicketWorkAction)) {
     try {
-      const candidates = await ticketApi.getNextHandlerCandidates(current.ticketId)
+      const candidates = allowed.code === 'ACCEPT' ? await ticketApi.getNextHandlerCandidates(current.ticketId)
+        : allowed.code === 'ASSIGN' ? await ticketApi.getAssignmentCandidates(current.ticketId)
+          : await ticketApi.getTransferCandidates(current.ticketId)
       if (isCurrent(current.ticketId, current.generation) && sequence === actionOpenSequence) nextHandlerCandidates.value = candidates
     } catch { if (isCurrent(current.ticketId, current.generation) && sequence === actionOpenSequence) actionError.value = '无法读取下一处理人候选列表，请稍后重试。' }
   }
+}
+async function saveProcessingDetails(): Promise<void> {
+  if (!processingForm.value || processingDetailsSaving.value || !processingDetailsEditable.value) return
+  await processingForm.value.saveDetails()
+}
+function onProcessingState(state: { editable: boolean; saving: boolean }): void {
+  processingDetailsEditable.value = state.editable
+  processingDetailsSaving.value = state.saving
+}
+function referenceKnowledge(reference: { id: string; title: string; url: string }): void {
+  activeDetailTab.value = 'basic'
+  processingForm.value?.insertReference(reference)
 }
 function closeAction(): void { if (!actionSubmitting.value) { actionOpenSequence++; selectedAction.value = null } }
 function onActionKeydown(event: KeyboardEvent): void {
@@ -297,6 +325,7 @@ async function submitAction(): Promise<void> {
     ticket.value = result.ticket
     await Promise.all([loadWorkflow(current.ticketId, source.value), loadComments(current.ticketId, source.value), loadSla(current.ticketId, source.value)])
     if (!isCurrent(current.ticketId, current.generation)) return
+    await processingForm.value?.load()
     processingForm.value?.acknowledgeAction(action)
     selectedAction.value = null
     actionContext.value = null
@@ -319,6 +348,8 @@ async function loadWorkflow(ticketId: string, dataSource: 'api' | 'demo'): Promi
     if (!isCurrent(ticketId, generation) || !ticket.value) return
     workflowTask.value = overview.tasks.find((task) => task.status === 'OPEN' || task.status === 'CLAIMED') ?? null
     assignmentSnapshots.value = overview.assignmentSnapshots ?? []
+    acceptanceCandidates.value = overview.acceptanceCandidates ?? []
+    acceptanceCandidateCount.value = overview.candidateCount ?? acceptanceCandidates.value.length
     workflowParticipants.value = overview.participants.map((participant) => ({ ...participant, role: participant.role === 'CO_HANDLER' ? 'COLLABORATOR' : 'PRIMARY' }))
     approvalRequests.value = overview.approvalRequests
     approvalDecisions.value = overview.approvalDecisions ?? []
@@ -336,7 +367,7 @@ async function loadWorkflow(ticketId: string, dataSource: 'api' | 'demo'): Promi
     }
   } catch {
     if (!isCurrent(ticketId, generation) || !ticket.value) return
-    ticket.value = { ...ticket.value, availableActions: [] }; workflowTask.value = null; assignmentSnapshots.value = []; workflowParticipants.value = []; approvalRequests.value = []; approvalDecisions.value = []; handoverRequests.value = []; coHandlerRequests.value = []; lifecycleApprovalRequests.value = []; controlledJumpActions.value = []
+    ticket.value = { ...ticket.value, availableActions: [] }; workflowTask.value = null; assignmentSnapshots.value = []; acceptanceCandidates.value = []; acceptanceCandidateCount.value = 0; workflowParticipants.value = []; approvalRequests.value = []; approvalDecisions.value = []; handoverRequests.value = []; coHandlerRequests.value = []; lifecycleApprovalRequests.value = []; controlledJumpActions.value = []
   }
 }
 async function loadAttachments(ticketId: string, dataSource: 'api' | 'demo'): Promise<void> {
@@ -363,12 +394,13 @@ async function loadTicket(): Promise<void> {
   actionOpenSequence++
   processingForm.value?.resetDrafts()
   processingDirty.value = false; ticket.value = null
+  processingDetailsEditable.value = false; processingDetailsSaving.value = false
   loading.value = true; errorMessage.value = ''; selectedAction.value = null; actionContext.value = null
   actionForm.value = { targetIamUserId: '', targetNode: '', reason: '', detail: '' }; nextHandlerCandidates.value = []
   handoverReason.value = ''; coHandlerReason.value = ''; relationForm.value = { targetTicketId: '', relationType: 'RELATED' }
   controlledJumpPreflight.value = null; controlledJumpError.value = ''; handoverError.value = ''; coHandlerError.value = ''; relationError.value = ''; lifecycleApprovalError.value = ''
   selectedControlledJump.value = null; selectedHandoverDecision.value = null; selectedCoHandlerDecision.value = null; showRelation.value = false
-  workflowTask.value = null; assignmentSnapshots.value = []; workflowParticipants.value = []; approvalRequests.value = []; approvalDecisions.value = []; handoverRequests.value = []; coHandlerRequests.value = []; lifecycleApprovalRequests.value = []; controlledJumpActions.value = []
+  workflowTask.value = null; assignmentSnapshots.value = []; acceptanceCandidates.value = []; acceptanceCandidateCount.value = 0; workflowParticipants.value = []; approvalRequests.value = []; approvalDecisions.value = []; handoverRequests.value = []; coHandlerRequests.value = []; lifecycleApprovalRequests.value = []; controlledJumpActions.value = []
   comments.value = []; attachments.value = []; relations.value = []; notificationSummary.value = null
   actionNotice.value = ''; actionError.value = ''; activeDetailTab.value = 'basic'
   actionSubmitting.value = false; controlledJumpSubmitting.value = false; handoverSubmitting.value = null; coHandlerSubmitting.value = null; lifecycleApprovalSubmitting.value = null; relationSubmitting.value = false
@@ -413,14 +445,14 @@ onBeforeUnmount(() => { disposed = true; contextGeneration++; selectedAction.val
         <header class="processing-document-heading"><span>工单编号：{{ ticket.id }}</span><h3>{{ typeNames[ticket.type] }} · {{ ticket.serviceCatalogItem.name }}</h3><b>{{ statusNames[ticket.status] }}</b></header>
         <nav class="processing-tabs" aria-label="工单处理页签"><button v-for="tab in detailTabs" :key="tab.code" type="button" :class="{ 'is-active': activeDetailTab === tab.code }" :aria-pressed="activeDetailTab === tab.code" :disabled="busy" @click="activeDetailTab = tab.code">{{ tab.label }}</button></nav>
         <div v-show="activeDetailTab === 'basic'" class="processing-main-content">
-      <section class="panel detail-panel identity-panel"><div class="panel-header"><div><h3>提交时身份快照</h3><p>保留 IAM ID 与当时组织职位，人员调岗不改写历史。</p></div></div><dl class="detail-definition"><div><dt>姓名</dt><dd>{{ ticket.requester.displayName }}</dd></div><div><dt>IAM 用户 ID</dt><dd class="mono-text">{{ ticket.requester.iamUserId }}</dd></div><div><dt>组织</dt><dd>{{ ticket.requester.organizationName }}</dd></div><div><dt>职位</dt><dd>{{ ticket.requester.positionName ?? '—' }}</dd></div><div><dt>快照时间</dt><dd>{{ formatFullTime(ticket.requester.capturedAt) }}</dd></div></dl></section>
+      <section class="panel detail-panel identity-panel"><div class="panel-header"><div><h3>申请信息</h3><p>以下为工单提交时的申请人和所属单位信息。</p></div></div><dl class="detail-definition"><div><dt>申请人</dt><dd>{{ ticket.requester.displayName }}</dd></div><div><dt>申请人部门</dt><dd>{{ ticket.requester.organizationName }}</dd></div><div><dt>职位</dt><dd>{{ ticket.requester.positionName ?? '—' }}</dd></div><div><dt>申请时间</dt><dd>{{ formatFullTime(ticket.createdAt) }}</dd></div></dl></section>
       <section class="panel detail-panel"><div class="panel-header"><div><h3>问题描述</h3><p>提交人填写的结构化信息与补充说明。</p></div></div><div v-if="ticket.descriptionFormat === 'RICH_TEXT' && ticket.descriptionHtml" class="ticket-description ticket-description--rich" v-html="ticket.descriptionHtml"></div><p v-else class="ticket-description">{{ ticket.description || '暂无补充说明。' }}</p><dl class="detail-definition"><div><dt>服务目录</dt><dd>{{ ticket.serviceCatalogItem.name }}</dd></div><div><dt>创建时间</dt><dd>{{ formatFullTime(ticket.createdAt) }}</dd></div><div><dt>当前版本</dt><dd>v{{ ticket.version }}（写操作必须校验）</dd></div></dl></section>
-          <TicketProcessingForm ref="processingForm" :key="ticket.id" :ticket="ticket" :actions="availableActions" :disabled="busy || source === 'demo'" @dirty-change="processingDirty = $event" />
+          <TicketProcessingForm ref="processingForm" :key="ticket.id" :ticket="ticket" :actions="availableActions" :disabled="actionSubmitting || source === 'demo'" :assignee-name="currentAssignee ? currentAssigneeLabel : undefined" @dirty-change="processingDirty = $event" @state-change="onProcessingState" />
       <section class="panel detail-panel"><div class="panel-header"><div><h3>附件</h3><p>文件须通过服务端隔离与扫描；下载时再次鉴权。</p></div></div><ul v-if="attachments.length" class="knowledge-attachment-list"><li v-for="file in attachments" :key="file.id"><div><b>{{ file.displayFileName }}</b><small>{{ attachmentSize(file.sizeBytes) }} · {{ file.detectedMediaType }}</small><span :class="`scan-state scan-state--${file.scanState.toLowerCase()}`">{{ attachmentScanLabel[file.scanState] }}</span></div><button v-if="file.downloadable && file.scanState === 'SCAN_PASSED'" class="button button--secondary button--compact" type="button" @click="downloadAttachment(file.id)">受鉴权下载</button><span v-else class="attachment-blocked">禁止下载</span></li></ul><p v-else class="workflow-unavailable">暂无可见附件。</p><p class="scan-notice">未通过扫描的附件禁止下载、发布和用于知识库。</p></section>
         </div>
         <div v-show="activeDetailTab === 'relations'" class="processing-main-content">      <section class="panel detail-panel related-tickets-panel"><div class="panel-header"><div><h3>关联工单</h3><p>关系建立与展示均需重新校验两张工单的对象权限。</p></div><button class="button button--secondary button--compact" type="button" @click="openRelation">关联工单</button></div><div v-if="relations.length" class="related-ticket-list"><RouterLink v-for="relation in relations" :key="`${relation.relationType}-${relation.relatedTicket.id}`" :to="`/tickets/${relation.relatedTicket.id}`" class="related-ticket-row"><span class="tag tag--muted">{{ relationLabels[relation.relationType] }}</span><b class="mono-text">{{ relation.relatedTicket.id }}</b><span>{{ relation.relatedTicket.title }}</span><small>{{ typeNames[relation.relatedTicket.type] }} · {{ statusNames[relation.relatedTicket.status] }} · {{ relation.direction === 'OUTBOUND' ? '本单发起' : '对方发起' }}</small></RouterLink></div><p v-else class="workflow-unavailable">暂无当前身份可见的关联工单。</p></section>
 </div>
-        <div v-show="activeDetailTab === 'workflow'" class="processing-main-content">      <section class="panel detail-panel process-overview-panel process-summary-panel"><div class="panel-header"><div><h3>流程摘要</h3><p>节点和候选资格均来自服务端工作流读模型。</p></div></div><WorkflowDiagramPanel :ticket-id="ticket.id" :active="activeDetailTab === 'workflow'" /><dl v-if="workflowTask" class="detail-definition process-task-definition"><div><dt>当前节点</dt><dd>{{ workflowTask.nodeKey }}</dd></div><div><dt>任务状态</dt><dd>{{ workflowTask.status === 'CLAIMED' ? '已领取' : '待处理' }}</dd></div><div><dt>候选角色</dt><dd>{{ workflowTask.candidateRole ?? '—' }}</dd></div><div><dt>候选/受理人</dt><dd class="mono-text">{{ workflowTask.assigneeIamUserId ?? workflowTask.candidateIamUserId ?? '角色池待领取' }}</dd></div></dl><div v-if="assignmentSnapshots.length" class="routing-snapshot-list"><small v-for="item in assignmentSnapshots" :key="`${item.nodeKey}-${item.capturedAt}`">{{ item.nodeKey }} · {{ item.mode === 'SYSTEM_RANDOM' ? '系统分派' : '上一节点指定' }} · 策略 v{{ item.policyVersion }} · {{ item.selectedIamUserId ?? '未分派' }}</small></div><p v-else class="workflow-unavailable">当前没有可展示的活动任务，或任务信息不在当前授权范围内。</p></section>
+        <div v-show="activeDetailTab === 'workflow'" class="processing-main-content">      <section class="panel detail-panel process-overview-panel process-summary-panel"><div class="panel-header"><div><h3>流程摘要</h3><p>节点和候选资格均来自服务端工作流读模型。</p></div></div><WorkflowDiagramPanel :ticket-id="ticket.id" :active="activeDetailTab === 'workflow'" /><dl v-if="workflowTask" class="detail-definition process-task-definition"><div><dt>当前节点</dt><dd>{{ workflowTask.nodeKey }}</dd></div><div><dt>任务状态</dt><dd>{{ workflowTask.status === 'CLAIMED' ? '已领取' : '待处理' }}</dd></div><div><dt>候选角色</dt><dd>{{ workflowTask.candidateRole ?? '—' }}</dd></div><div><dt>候选/受理人</dt><dd>{{ currentAssignee ? currentAssigneeLabel : acceptanceCandidateCount ? `共享队列待抢单（${acceptanceCandidateCount} 人）` : '角色池待领取' }}</dd></div></dl><div v-if="acceptanceCandidates.length" class="acceptance-candidates"><div class="acceptance-candidates__heading"><b>可抢单人员（{{ acceptanceCandidateCount }}）</b></div><ul class="acceptance-candidate-list"><li v-for="candidate in acceptanceCandidates" :key="candidate.iamUserId"><span class="participant-avatar">{{ candidate.displayName.slice(0, 1) }}</span><span><b>{{ candidate.displayName }}</b><small>{{ [candidate.organizationName, candidate.positionName].filter(Boolean).join(' · ') || '在岗人员' }}</small></span></li></ul></div><div v-if="assignmentSnapshots.length" class="routing-snapshot-list"><small v-for="item in assignmentSnapshots" :key="`${item.nodeKey}-${item.capturedAt}`">{{ item.nodeKey }} · {{ item.mode === 'SYSTEM_RANDOM' ? '系统分派' : item.mode === 'SHARED_QUEUE' ? '共享队列' : '上一节点指定' }} · 策略 v{{ item.policyVersion }} · {{ item.selectedIamUserId ?? '未分派' }}</small></div><p v-else class="workflow-unavailable">当前没有可展示的活动任务，或任务信息不在当前授权范围内。</p></section>
 </div>
         <div v-show="activeDetailTab === 'approvals'" class="processing-main-content">      <section class="panel detail-panel">
         <div class="panel-header"><div><h3>审批申请记录</h3><p>审批通过不等于已执行；执行结果、执行人和节点迁移均由服务端事务留痕。</p></div></div>
@@ -488,8 +520,8 @@ onBeforeUnmount(() => { disposed = true; contextGeneration++; selectedAction.val
 </div>
       </section>
       <aside class="processing-sidebar" aria-label="工单时效与协作参考" :inert="Boolean(selectedAction)">
-      <div class="processing-summary"><section class="panel detail-panel"><div class="panel-header"><div><h3>处理摘要</h3><p>当前状态、主办人和组织以服务端为准。</p></div></div><dl class="detail-definition"><div><dt>当前状态</dt><dd>{{ statusNames[ticket.status] }}</dd></div><div><dt>当前处理人</dt><dd>{{ ticket.assignee?.displayName ?? '待后端分派' }}</dd></div><div><dt>处理组织</dt><dd>{{ ticket.assignee?.organizationName ?? '—' }}</dd></div></dl></section><section class="panel detail-panel sla-ticket-panel"><div class="panel-header"><div><h3>SLA 时效</h3><p>目标、暂停和风险由服务端计算。</p></div></div><template v-if="ticket.sla"><div class="sla-ticket-policy"><b>{{ ticket.sla.policyName }}</b><span class="tag" :class="ticket.sla.riskLevel === 'NORMAL' ? 'tag--green' : ticket.sla.riskLevel === 'AT_RISK' ? 'tag--orange' : 'tag--red'">{{ slaRiskLabel(ticket.sla.riskLevel) }}</span></div><dl class="detail-definition"><div><dt>响应目标</dt><dd>{{ ticket.sla.responseTargetAt ? formatFullTime(ticket.sla.responseTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.responseRemainingMinutes) }}</small></dd></div><div><dt>解决目标</dt><dd>{{ ticket.sla.resolutionTargetAt ? formatFullTime(ticket.sla.resolutionTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.resolutionRemainingMinutes) }}</small></dd></div><div><dt>计时状态</dt><dd>{{ ticket.sla.paused ? '已暂停（已审批）' : '计时中' }}<small v-if="ticket.sla.pausedMinutes">累计暂停 {{ ticket.sla.pausedMinutes }} 分钟</small></dd></div></dl></template><p v-else class="workflow-unavailable">当前未返回可查看的 SLA 明细。</p></section></div>
-        <TicketKnowledgeSidebar :key="ticket.id" :ticket-id="ticket.id" :catalog-id="ticket.serviceCatalogItem.id" />
+      <div class="processing-summary"><section class="panel detail-panel"><div class="panel-header"><div><h3>处理摘要</h3><p>当前状态、主办人和组织以服务端为准。</p></div></div><dl class="detail-definition"><div><dt>当前状态</dt><dd>{{ statusNames[ticket.status] }}</dd></div><div><dt>当前处理人</dt><dd>{{ currentAssignee ? currentAssigneeLabel : acceptanceCandidateCount ? `等待 ${acceptanceCandidateCount} 人抢单` : '待后端分派' }}</dd></div><div><dt>处理组织</dt><dd>{{ currentAssignee?.organizationName ?? '—' }}</dd></div></dl><div v-if="acceptanceCandidates.length" class="acceptance-candidates acceptance-candidates--summary"><div class="acceptance-candidates__heading"><b>可抢单人员（{{ acceptanceCandidateCount }}）</b></div><ul class="acceptance-candidate-list"><li v-for="candidate in acceptanceCandidates" :key="candidate.iamUserId" :title="[candidate.organizationName, candidate.positionName].filter(Boolean).join(' · ')"><span class="participant-avatar">{{ candidate.displayName.slice(0, 1) }}</span><span><b>{{ candidate.displayName }}</b></span></li></ul></div></section><section class="panel detail-panel sla-ticket-panel"><div class="panel-header"><div><h3>SLA 时效</h3><p>目标、暂停和风险由服务端计算。</p></div></div><template v-if="ticket.sla"><div class="sla-ticket-policy"><b>{{ ticket.sla.policyName }}</b><span class="tag" :class="ticket.sla.riskLevel === 'NORMAL' ? 'tag--green' : ticket.sla.riskLevel === 'AT_RISK' ? 'tag--orange' : 'tag--red'">{{ slaRiskLabel(ticket.sla.riskLevel) }}</span></div><dl class="detail-definition"><div><dt>响应目标</dt><dd>{{ ticket.sla.responseTargetAt ? formatFullTime(ticket.sla.responseTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.responseRemainingMinutes) }}</small></dd></div><div><dt>解决目标</dt><dd>{{ ticket.sla.resolutionTargetAt ? formatFullTime(ticket.sla.resolutionTargetAt) : '—' }}<small>{{ slaRemaining(ticket.sla.resolutionRemainingMinutes) }}</small></dd></div><div><dt>计时状态</dt><dd>{{ ticket.sla.paused ? '已暂停（已审批）' : '计时中' }}<small v-if="ticket.sla.pausedMinutes">累计暂停 {{ ticket.sla.pausedMinutes }} 分钟</small></dd></div></dl></template><p v-else class="workflow-unavailable">当前未返回可查看的 SLA 明细。</p></section></div>
+        <TicketKnowledgeSidebar :key="ticket.id" :ticket-id="ticket.id" :catalog-id="ticket.serviceCatalogItem.id" @reference="referenceKnowledge" />
       <section class="panel detail-panel collaboration-sidebar-panel collaboration-participants-panel"><div class="panel-header"><div><h3>主办与协办</h3><p>主办/协办关系由服务端协作规则返回。</p></div><button v-if="collaborationActions.some((item) => item.code === 'ADD_COHANDLER')" class="button button--secondary button--compact" type="button" @click="openAction(collaborationActions.find((item) => item.code === 'ADD_COHANDLER')!)">添加协办</button></div><ul v-if="participants.length" class="participant-list"><li v-for="participant in participants" :key="`${participant.role}-${participant.identity.iamUserId}`"><span class="participant-avatar">{{ participant.identity.displayName.slice(0, 1) }}</span><div><b>{{ participant.identity.displayName }}</b><small>{{ participant.identity.organizationName }} · {{ participant.identity.positionName ?? '—' }}</small></div><span class="role-pill">{{ participantRole(participant.role) }}</span></li></ul><p v-else class="workflow-unavailable">暂未返回协作人员。</p></section>
       <section class="panel detail-panel collaboration-sidebar-panel collaboration-comments-panel"><div class="panel-header"><div><h3>内部沟通</h3><p>仅对具备内部协作权限的当前人员展示。</p></div><button v-if="canComment" class="button button--secondary button--compact" type="button" @click="openAction({ code: 'INTERNAL_COMMENT', label: '内部评论' })">发表评论</button></div><div v-if="comments.length" class="comment-list"><article v-for="comment in comments" :key="comment.id"><div class="comment-head"><b>{{ comment.author.displayName }}</b><span>{{ formatFullTime(comment.createdAt) }}</span></div><p>{{ comment.content }}</p><small v-if="comment.auditEventId">内部 · 审计：{{ comment.auditEventId }}</small></article></div><p v-else class="workflow-unavailable">暂无可见内部评论，或当前身份无查看权限。</p></section>
       </aside>
@@ -497,11 +529,12 @@ onBeforeUnmount(() => { disposed = true; contextGeneration++; selectedAction.val
     <footer class="processing-actionbar" aria-label="当前可执行工单操作">
       <div><span>当前：{{ statusNames[ticket.status] }}</span><small>操作结果以服务端流程与审批为准</small></div>
       <div class="processing-action-buttons">
-        <button v-for="action in availableActions" :key="action.code" class="button button--compact" :class="['RESOLVE', 'ACCEPT', 'CLAIM'].includes(action.code) ? 'button--primary' : 'button--secondary'" type="button" :disabled="busy || source === 'demo' || Boolean(action.disabledReason)" :title="action.disabledReason" @click="openAction(action)">{{ action.code === 'INTERNAL_COMMENT' ? '保存处理意见' : action.label ?? actionLabels[action.code] }}</button>
-        <small v-if="!availableActions.length">当前没有可执行操作，请查看流程记录或联系处理人。</small>
+        <button v-if="processingDetailsEditable" class="button button--secondary button--compact" type="button" :disabled="busy || source === 'demo' || !processingDirty" @click="saveProcessingDetails">{{ processingDetailsSaving ? '保存中…' : '保存' }}</button>
+        <button v-for="action in footerActions" :key="action.code" class="button button--compact" :class="['RESOLVE', 'ACCEPT', 'CLAIM', 'REQUEST_USER_FEEDBACK', 'CLOSE'].includes(action.code) ? 'button--primary' : 'button--secondary'" type="button" :disabled="busy || source === 'demo' || Boolean(action.disabledReason)" :title="action.disabledReason" @click="openAction(action)">{{ action.label ?? actionLabels[action.code] }}</button>
+        <small v-if="!footerActions.length && !processingDetailsEditable">当前没有可执行操作，请查看流程记录或联系处理人。</small>
       </div>
     </footer>
-    <div v-if="selectedAction" class="modal-backdrop" @mousedown.self="closeAction"><section class="action-modal" role="dialog" aria-modal="true" :aria-label="actionTitle" @keydown="onActionKeydown"><div class="modal-heading"><div><span class="eyebrow">工单 {{ ticket.id }} · 版本 v{{ ticket.version }}</span><h3>{{ actionTitle }}</h3><p>{{ actionHelp(selectedAction.code) }}</p></div><button class="modal-close" type="button" aria-label="关闭" @click="closeAction">×</button></div><form class="action-form" @submit.prevent="submitAction"><label v-if="selectedAction.code === 'CONTROLLED_JUMP_REQUEST'" class="field"><span>目标流程节点 <b>*</b></span><select v-model="actionForm.targetNode"><option value="">请选择允许的节点</option><option v-for="node in processNodes" :key="node.code" :value="node.code">{{ node.label }}</option></select></label><p v-if="!isComment && !requiresReason" class="workflow-unavailable">此动作不保存处理意见；本页未提交意见会保留，请通过“保存处理意见”单独记录。</p><label v-if="needsTarget" class="field"><span>下一处理人 <b>*</b></span><select v-if="nextHandlerCandidates.length" v-model="actionForm.targetIamUserId"><option value="">请选择已授权人员</option><option v-for="candidate in nextHandlerCandidates" :key="candidate.iamUserId" :value="candidate.iamUserId">{{ candidate.displayName }} · {{ candidate.organizationName }}</option></select><input v-else v-model.trim="actionForm.targetIamUserId" maxlength="128" placeholder="例如 iam-u-000063" /><small>候选名单由服务端按目录、节点、IAM 状态与角色池过滤。</small></label><label v-if="requiresReason" class="field"><span>操作理由 <b>*</b></span><textarea v-model="actionForm.reason" maxlength="1000" rows="4" placeholder="填写本次操作依据；主表单处理或解决说明已自动带入。" /></label><label v-if="isComment || requiresReason" class="field"><span>{{ isComment ? '评论内容' : '处理补充' }}<b v-if="isComment">*</b></span><textarea v-model.trim="actionForm.detail" :maxlength="isComment ? 2000 : 1000" rows="4" :placeholder="isComment ? '仅填写可供内部协作的处理信息，不填写密码、令牌等敏感数据。' : '可选：补充说明将与操作理由一起提交（合计最多1000字符）。'" /></label><div class="action-form__meta"><span>乐观锁版本</span><b>v{{ actionContext?.version }}</b><small>提交时由后端校验；版本冲突需刷新后重试。</small></div><p v-if="actionError" class="form-alert form-alert--error">{{ actionError }}</p><p v-if="actionNotice" class="form-alert form-alert--success">{{ actionNotice }}</p><div class="modal-actions"><button class="button button--secondary" type="button" :disabled="actionSubmitting" @click="closeAction">取消</button><button class="button button--primary" type="submit" :disabled="actionSubmitting">{{ source === 'demo' ? '演示中禁止提交' : actionSubmitting ? '正在提交…' : selectedAction.code === 'CLAIM' ? '确认抢单' : '提交至服务端' }}</button></div></form></section></div>
+<div v-if="selectedAction" class="modal-backdrop" @mousedown.self="closeAction"><section class="action-modal" role="dialog" aria-modal="true" :aria-label="actionTitle" @keydown="onActionKeydown"><div class="modal-heading"><div><span class="eyebrow">工单 {{ ticket.id }} · 版本 v{{ ticket.version }}</span><h3>{{ actionTitle }}</h3><p>{{ actionHelp(selectedAction.code) }}</p></div><button class="modal-close" type="button" aria-label="关闭" @click="closeAction">×</button></div><form class="action-form" @submit.prevent="submitAction"><label v-if="selectedAction.code === 'CONTROLLED_JUMP_REQUEST'" class="field"><span>目标流程节点 <b>*</b></span><select v-model="actionForm.targetNode"><option value="">请选择允许的节点</option><option v-for="node in processNodes" :key="node.code" :value="node.code">{{ node.label }}</option></select></label><p v-if="!isComment && !requiresReason" class="workflow-unavailable">此动作不修改处理信息；如有未保存内容，请先点击底部“保存”。</p><label v-if="needsTarget" class="field"><span>下一处理人 <b>*</b></span><select v-model="actionForm.targetIamUserId" :disabled="!nextHandlerCandidates.length"><option value="">{{ nextHandlerCandidates.length ? '请选择已授权人员' : '暂无可选人员' }}</option><option v-for="candidate in nextHandlerCandidates" :key="candidate.iamUserId" :value="candidate.iamUserId">{{ candidate.displayName }} · {{ candidate.organizationName }}</option></select><small>候选名单由服务端按当前系统、目录、人员状态、角色和数据范围过滤；不接受手填账号。</small></label><label v-if="requiresReason" class="field"><span>操作理由 <b>*</b></span><textarea v-model="actionForm.reason" maxlength="1000" rows="4" placeholder="填写本次操作依据；主表单处理或解决说明已自动带入。" /></label><label v-if="isComment || requiresReason" class="field"><span>{{ isComment ? '评论内容' : '处理补充' }}<b v-if="isComment">*</b></span><textarea v-model.trim="actionForm.detail" :maxlength="isComment ? 2000 : 1000" rows="4" :placeholder="isComment ? '仅填写可供内部协作的处理信息，不填写密码、令牌等敏感数据。' : '可选：补充说明将与操作理由一起提交（合计最多1000字符）。'" /></label><div class="action-form__meta"><span>乐观锁版本</span><b>v{{ actionContext?.version }}</b><small>提交时由后端校验；版本冲突需刷新后重试。</small></div><p v-if="actionError" class="form-alert form-alert--error">{{ actionError }}</p><p v-if="actionNotice" class="form-alert form-alert--success">{{ actionNotice }}</p><div class="modal-actions"><button class="button button--secondary" type="button" :disabled="actionSubmitting" @click="closeAction">取消</button><button class="button button--primary" type="submit" :disabled="actionSubmitting || (needsTarget && !nextHandlerCandidates.length)">{{ source === 'demo' ? '演示中禁止提交' : actionSubmitting ? '正在提交…' : selectedAction.code === 'CLAIM' ? '确认抢单' : (actionTitle.startsWith('确认') ? actionTitle : `确认${actionTitle}`) }}</button></div></form></section></div>
     <div v-if="selectedControlledJump" class="modal-backdrop" @mousedown.self="closeControlledJump">
       <section class="action-modal" role="dialog" aria-modal="true" aria-label="受控跳转预演与执行">
         <div class="modal-heading"><div><span class="eyebrow">工单 {{ ticket.id }} · 版本 v{{ ticket.version }}</span><h3>受控跳转预演</h3><p>预演不改变流程；确认执行时，服务端会再次校验审批、对象权限、版本、节点和候选人。</p></div><button class="modal-close" type="button" aria-label="关闭" @click="closeControlledJump">×</button></div>

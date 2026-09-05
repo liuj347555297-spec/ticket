@@ -32,6 +32,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,6 +54,8 @@ public class TicketService {
     private final TicketCursorCodec cursors;
     private final SupportQueueEligibilityService supportQueues;
     private final Clock clock = Clock.systemUTC();
+    @Value("${servicehub.platform-time-zone:Asia/Shanghai}")
+    private String platformTimeZone;
 
     public TicketService(TicketRepository ticketRepository, CurrentUserProvider currentUserProvider,
                          ObjectAuthorizationService authorizationService, IdentitySnapshotResolver identitySnapshotResolver,
@@ -164,9 +167,16 @@ public class TicketService {
             page = decoded.page(); snapshotAt = decoded.snapshotAt();
             afterCreatedAt = decoded.lastCreatedAt(); afterId = decoded.lastId();
         }
+        java.time.Instant todayDueFrom = null, todayDueTo = null;
+        if (effectiveQueue == TicketQueue.TODAY_DUE) {
+            java.time.ZoneId platformZone = java.time.ZoneId.of(platformTimeZone);
+            java.time.LocalDate businessDate = snapshotAt.atZone(platformZone).toLocalDate();
+            todayDueFrom = businessDate.atStartOfDay(platformZone).toInstant();
+            todayDueTo = businessDate.plusDays(1).atStartOfDay(platformZone).toInstant();
+        }
         var personalScope=ticketScopes.resolve(user);var teamScope=teamQueueCode==null?null:supportQueues.listingScope(teamQueueCode,user);
         var query = new TicketQuery(status, type, priority, normalizedCatalog, normalizedOrganization, createdFromInclusive, createdToExclusive,
-            normalizedKeyword, effectiveQueue,teamQueueCode, personalScope,teamScope,
+            normalizedKeyword, effectiveQueue,teamQueueCode, todayDueFrom, todayDueTo, personalScope,teamScope,
             snapshotAt, afterCreatedAt, afterId, pageSize);
         var slice = ticketRepository.findPage(query);
         String nextCursor = null;

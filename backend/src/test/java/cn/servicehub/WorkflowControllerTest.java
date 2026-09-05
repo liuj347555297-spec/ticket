@@ -322,10 +322,10 @@ class WorkflowControllerTest {
                 .header("If-Match", "\"3\"").contentType(MediaType.APPLICATION_JSON).content("{\"action\":\"HOLD\",\"reason\":\"等待业务方补充复现路径\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.status", is("IN_PROGRESS"))).andExpect(jsonPath("$.version", is(3)));
         MvcResult overview = mockMvc.perform(get("/api/v1/tickets/{id}/workflow", ticketId).with(user("iam-u-1002").roles("FIRST_LINE_SUPPORT")))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.lifecycleApprovalRequests[2].action", is("HOLD")))
-            .andExpect(jsonPath("$.lifecycleApprovalRequests[2].status", is("PENDING_APPROVAL")))
-            .andExpect(jsonPath("$.lifecycleApprovalRequests[2].processKey", is("servicehubLifecycleActionApproval"))).andReturn();
-        String requestId = objectMapper.readTree(overview.getResponse().getContentAsByteArray()).at("/lifecycleApprovalRequests/2/id").asText();
+            .andExpect(status().isOk()).andExpect(jsonPath("$.lifecycleApprovalRequests[1].action", is("HOLD")))
+            .andExpect(jsonPath("$.lifecycleApprovalRequests[1].status", is("PENDING_APPROVAL")))
+            .andExpect(jsonPath("$.lifecycleApprovalRequests[1].processKey", is("servicehubLifecycleActionApproval"))).andReturn();
+        String requestId = objectMapper.readTree(overview.getResponse().getContentAsByteArray()).at("/lifecycleApprovalRequests/1/id").asText();
         mockMvc.perform(post("/api/v1/tickets/{id}/workflow/lifecycle-approval-requests/{requestId}/decisions", ticketId, requestId)
                 .with(user("iam-u-1002").roles("SERVICE_MANAGER")).with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"decision\":\"APPROVED\",\"reason\":\"申请人不得自行审批\"}"))
             .andExpect(status().isForbidden());
@@ -398,11 +398,20 @@ class WorkflowControllerTest {
     private org.springframework.test.web.servlet.ResultActions approvedLifecycleAction(String ticketId, long version, String action, String target,
                                                                                        String applicantIamUserId, String applicantRole) throws Exception {
         String targetJson = target == null ? "" : ",\"targetIamUserId\":\"" + target + "\"";
-        mockMvc.perform(post("/api/v1/tickets/{id}/workflow/actions", ticketId)
+        MvcResult submitted = mockMvc.perform(post("/api/v1/tickets/{id}/workflow/actions", ticketId)
                 .with(user(applicantIamUserId).roles(applicantRole.substring("ROLE_".length()))).with(csrf())
                 .header("If-Match", "\"" + version + "\"").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"action\":\"" + action + "\",\"reason\":\"测试审批所需的标准处理依据\"" + targetJson + "}"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.version", is((int) version)));
+            .andExpect(status().isOk()).andReturn();
+        JsonNode submittedTicket = objectMapper.readTree(submitted.getResponse().getContentAsByteArray());
+        boolean completedDirectly = ("ACCEPT".equals(action) && "IN_PROGRESS".equals(submittedTicket.path("status").asText()))
+            || ("RESOLVE".equals(action) && "RESOLVED".equals(submittedTicket.path("status").asText()))
+            || ("CLOSE".equals(action) && "CLOSED".equals(submittedTicket.path("status").asText()));
+        if (completedDirectly) {
+            return mockMvc.perform(get("/api/v1/tickets/{id}", ticketId)
+                .with(user(applicantIamUserId).roles(applicantRole.substring("ROLE_".length()))));
+        }
+        assertEquals(version, submittedTicket.required("version").asLong());
         MvcResult overview = mockMvc.perform(get("/api/v1/tickets/{id}/workflow", ticketId)
                 .with(user(applicantIamUserId).roles(applicantRole.substring("ROLE_".length()))))
             .andExpect(status().isOk()).andReturn();

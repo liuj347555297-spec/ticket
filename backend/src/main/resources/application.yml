@@ -30,11 +30,26 @@ flowable:
   async-executor-activate: false
   database-schema-update: true
 server:
+  servlet:
+    session:
+      cookie:
+        name: SERVICEHUB_SESSION
+        http-only: true
+        same-site: lax
   error:
     include-message: never
     include-stacktrace: never
     include-binding-errors: never
 servicehub:
+  platform-time-zone: ${SERVICEHUB_PLATFORM_TIME_ZONE:Asia/Shanghai}
+  local-auth:
+    enabled: ${SERVICEHUB_LOCAL_AUTH_ENABLED:false}
+    bootstrap-login-name: ${SERVICEHUB_LOCAL_AUTH_BOOTSTRAP_LOGIN:}
+    bootstrap-password: ${SERVICEHUB_LOCAL_AUTH_BOOTSTRAP_PASSWORD:}
+    bootstrap-display-name: ${SERVICEHUB_LOCAL_AUTH_BOOTSTRAP_DISPLAY_NAME:}
+    bootstrap-organization-id: ${SERVICEHUB_LOCAL_AUTH_BOOTSTRAP_ORGANIZATION_ID:}
+    bootstrap-organization-name: ${SERVICEHUB_LOCAL_AUTH_BOOTSTRAP_ORGANIZATION_NAME:}
+    local-dev-password: ${SERVICEHUB_LOCAL_AUTH_LOCAL_DEV_PASSWORD:}
   iam-sso:
     # Enable only after the internal IAM OIDC client registration, issuer, redirect URI and immutable subject field have been approved.
     enabled: ${SERVICEHUB_IAM_SSO_ENABLED:false}
@@ -88,6 +103,7 @@ servicehub:
     # Allows Spring Security test identities and the local preview shell. Production overrides
     # this to false so only the server-created VerifiedIamAuthentication marker is accepted.
     allow-direct-test-identities: true
+    dev-header-enabled: ${SERVICEHUB_DEV_HEADER_ENABLED:false}
   ticket:
     pagination:
       cursor-signing-key: ${SERVICEHUB_TICKET_CURSOR_SIGNING_KEY:local-development-only-ticket-cursor-signing-key}

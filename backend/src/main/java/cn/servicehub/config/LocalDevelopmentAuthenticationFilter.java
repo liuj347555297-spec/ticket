@@ -5,6 +5,7 @@ import java.net.InetAddress;
 import java.util.List;
 import java.util.Map;
 import org.springframework.context.annotation.Profile;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -22,6 +23,7 @@ import jakarta.servlet.http.HttpServletResponse;
  */
 @Component
 @Profile("local-dev")
+@ConditionalOnProperty(prefix = "servicehub.security", name = "dev-header-enabled", havingValue = "true")
 public class LocalDevelopmentAuthenticationFilter extends OncePerRequestFilter {
     /** This header selects one fixed fixture only; it never transports an IAM id or role claim. */
     static final String IDENTITY_HEADER = "X-ServiceHub-Dev-Identity";

@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
-/** Fails startup when a production process enables any direct/local identity path. */
+/** Fails startup when production enables a direct test identity path; verified local accounts remain supported. */
 @Component
 @Profile("prod")
 public class ProductionProfileGuard implements InitializingBean {
@@ -25,6 +25,9 @@ public class ProductionProfileGuard implements InitializingBean {
         }
         if (security.allowDirectTestIdentities()) {
             throw new IllegalStateException("Direct test identities are forbidden in production");
+        }
+        if (security.devHeaderEnabled()) {
+            throw new IllegalStateException("Development identity headers are forbidden in production");
         }
     }
 }

@@ -3,7 +3,7 @@ import type { TicketActionCode } from '../api/tickets'
 export const PROCESSING_NOTE_LIMIT = 2000
 export const RESOLUTION_REASON_LIMIT = 1000
 /** Only these backend branches actually persist an operation reason. */
-export const processingReasonActions: readonly TicketActionCode[] = ['HANDOVER', 'ADD_COHANDLER', 'CONTROLLED_JUMP_REQUEST', 'HOLD', 'ESCALATE', 'CANCEL', 'REOPEN', 'ASSIGN', 'ACCEPT', 'RESOLVE', 'CLOSE']
+export const processingReasonActions: readonly TicketActionCode[] = ['HANDOVER', 'ADD_COHANDLER', 'CONTROLLED_JUMP_REQUEST', 'HOLD', 'ESCALATE', 'CANCEL', 'REOPEN', 'ASSIGN', 'RESOLVE']
 export const resolutionCategories = ['故障修复', '配置调整', '操作指导', '服务完成', '其他'] as const
 export type ProcessingNoteField = 'processing' | 'resolution'
 export interface ProcessingActionPayload { reason: string; detail: string }

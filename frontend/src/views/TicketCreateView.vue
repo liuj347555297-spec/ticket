@@ -13,6 +13,8 @@ import WorkflowDiagramPanel from '@/components/WorkflowDiagramPanel.vue'
 import { useSessionStore } from '@/stores/session'
 import { readTicketDraft, removeTicketDraft, type TicketDraft, writeTicketDraft } from '@/utils/ticketDraft'
 import { canReleaseSubmission, createSubmissionSession } from '@/utils/submissionSession'
+import { ticketDraftApi, type PersonalDraftPayload } from '@/api/ticket-drafts'
+import { knowledgeApi, type KnowledgeArticleSummary } from '@/api/knowledge'
 import '@/styles/ticket-create-workspace.css'
 
 type FieldValues = Record<string, string | boolean | string[]>
@@ -40,12 +42,18 @@ const scopeNeedsRefresh = ref(false)
 const pendingLaunch = ref<ServiceLaunchIntent | null>(null), launchLoading = ref(false), launchError = ref('')
 const restoringDraft = ref(false)
 const creationUncertain = ref(false)
+const personalDraftId=ref(''), personalDraftVersion=ref(0), savingPersonalDraft=ref(false), personalDraftNotice=ref('')
+let personalDraftAttempt: {id:string;version:number;payload:PersonalDraftPayload}|null=null
+const personalDraftUncertain=ref(false)
+const personalDraftConflict=ref(false)
+const suggestedKnowledge=ref<KnowledgeArticleSummary[]>([]), knowledgeLoading=ref(false), knowledgeError=ref('')
+let knowledgeGeneration=0,knowledgeTimer:ReturnType<typeof setTimeout>|undefined
 const creation = createSubmissionSession((request: TicketCreateRequest, key: string) => ticketApi.create(request, key))
 type UploadState = 'WAITING' | 'UPLOADING' | 'UPLOADED' | 'BLOCKED' | 'UNKNOWN'
 const uploadProgress = ref<{ name: string; kind: string; state: UploadState }[]>([])
 const uploadStateNames: Record<UploadState, string> = { WAITING: '待上传', UPLOADING: '上传中', UPLOADED: '已上传并通过扫描', BLOCKED: '已接收，扫描未通过或待处理', UNKNOWN: '结果待核对，请勿重复上传' }
 const imageLinkError = ref(false)
-const formLocked = computed(() => confirming.value || submitting.value || creationUncertain.value || launchLoading.value || restoringDraft.value || session.loading || scopeNeedsRefresh.value || Boolean(createdTicketId.value))
+const formLocked = computed(() => confirming.value || submitting.value || creationUncertain.value || savingPersonalDraft.value || personalDraftUncertain.value || launchLoading.value || restoringDraft.value || session.loading || scopeNeedsRefresh.value || Boolean(createdTicketId.value))
 const draftCandidate = ref<TicketDraft | null>(null)
 const draftReady = ref(false), draftDirty = ref(false), allowNavigation = ref(false)
 const suppressDraftTracking = ref(false)
@@ -285,6 +293,61 @@ function handleFormEnter(event: KeyboardEvent): void {
 function formatDraftTime(timestamp: number): string {
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
 }
+async function savePersonalDraft(): Promise<void> {
+  if(savingPersonalDraft.value||submitting.value||confirming.value||creationUncertain.value||createdTicketId.value||restoringDraft.value||scopeNeedsRefresh.value)return
+  if(!hasMeaningfulInput.value){submitError.value='请先填写主题或选择服务后再暂存。';return}
+  const epoch=contextGeneration;savingPersonalDraft.value=true;submitError.value=''
+  try {
+    if(!personalDraftAttempt){
+      const copy=JSON.parse(JSON.stringify(form.value))
+      // Pending inline image URLs are bound to this browser tab, never persisted as usable links.
+      copy.descriptionHtml=copy.descriptionHtml.replace(/<img\b[^>]*>/gi,'<p>【草稿图片需重新选择】</p>')
+      personalDraftAttempt={id:personalDraftId.value||`TD-${crypto.randomUUID()}`,version:personalDraftVersion.value,payload:{form:copy,formVersion:loadedForm.value?.formVersion??null,fieldValues:JSON.parse(JSON.stringify(fieldValues.value))}}
+    }
+    const request=personalDraftAttempt,result=await ticketDraftApi.save(request.id,request.version,request.payload)
+    if(viewDisposed||epoch!==contextGeneration)return
+    personalDraftId.value=result.id;personalDraftVersion.value=result.version;personalDraftAttempt=null;personalDraftUncertain.value=false;personalDraftConflict.value=false
+    personalDraftNotice.value='已暂存到草稿箱。主题、正文和表单内容已保存；附件需重新选择。'
+    draftDirty.value=false
+    // Keep refresh/bookmark aligned with a newly saved copy, rather than reopening the older draft.
+    if(route.query.draftId!==result.id)await router.replace({path:route.path,query:{draftId:result.id}})
+  } catch(cause){
+    if(viewDisposed||epoch!==contextGeneration)return
+    if(cause instanceof ApiError&&cause.status===409){personalDraftConflict.value=true;personalDraftAttempt=null;personalDraftUncertain.value=false;submitError.value='这份草稿已在其他页面更新，当前填写内容仍保留。可点击“另存为新草稿”，不会覆盖另一份修改。';return}
+    const rejected=cause instanceof ApiError&&[400,401,403,404,413,422].includes(cause.status)
+    if(rejected&&!personalDraftUncertain.value)personalDraftAttempt=null;else personalDraftUncertain.value=true
+    submitError.value=personalDraftUncertain.value?'暂存结果尚未确认，再次点击暂存将核对同一份内容。':publicApiError(cause,'暂存失败，请稍后重试。')
+  }
+  finally{if(!viewDisposed&&epoch===contextGeneration)savingPersonalDraft.value=false}
+}
+async function savePersonalDraftCopy():Promise<void>{
+  if(!personalDraftConflict.value||savingPersonalDraft.value||submitting.value||scopeNeedsRefresh.value)return
+  personalDraftId.value='';personalDraftVersion.value=0;personalDraftAttempt=null;personalDraftConflict.value=false
+  await savePersonalDraft()
+}
+async function loadPersonalDraft(id:string):Promise<void>{
+  if(!/^TD-[0-9a-f-]{36}$/.test(id)){submitError.value='草稿地址无效。';return}
+  const epoch=contextGeneration;restoringDraft.value=true;suppressDraftTracking.value=true;submitError.value=''
+  try{
+    const saved=await ticketDraftApi.get(id);if(viewDisposed||epoch!==contextGeneration)return
+    personalDraftId.value=saved.id;personalDraftVersion.value=saved.version;draftCandidate.value=null;pendingLaunch.value=null
+    const payload=saved.payload
+    form.value.systemCode=payload.form.systemCode
+    if(form.value.systemCode)await onSystemChange()
+    if(viewDisposed||epoch!==contextGeneration)return
+    if(payload.form.moduleCode&&selectableModules.value.some(m=>m.moduleCode===payload.form.moduleCode)){form.value.moduleCode=payload.form.moduleCode;await onModuleChange()}
+    if(viewDisposed||epoch!==contextGeneration)return
+    if(mappedCatalogItems.value.some(i=>i.id===payload.form.catalogId)){form.value.catalogId=payload.form.catalogId;await onCatalogChange()}
+    if(viewDisposed||epoch!==contextGeneration)return
+    form.value.title=payload.form.title;form.value.descriptionHtml=payload.form.descriptionHtml;form.value.descriptionText=payload.form.descriptionText
+    if(loadedForm.value&&loadedForm.value.formVersion===payload.formVersion){
+      const allowed=new Set(loadedForm.value.fields.map(f=>f.code));fieldValues.value=Object.fromEntries(Object.entries(payload.fieldValues).filter(([code])=>allowed.has(code)))
+      form.value.tags=payload.form.tags.filter(tag=>loadedForm.value!.tagPolicy.allowFreeTags||suggestedTags.value.includes(tag)).slice(0,effectiveMaxTags.value)
+    }
+    syncRegistryStructuredFields();personalDraftNotice.value=loadedForm.value?'草稿已恢复，请核对内容后发起；附件需重新选择。':'已恢复草稿正文，原服务可能已下线，请重新选择系统和服务。';draftDirty.value=false;draftReady.value=true
+  }catch(cause){if(!viewDisposed&&epoch===contextGeneration)submitError.value=publicApiError(cause,'草稿无法读取，请返回草稿箱核对。')}
+  finally{if(!viewDisposed&&epoch===contextGeneration){restoringDraft.value=false;await nextTick();suppressDraftTracking.value=false}}
+}
 function persistDraft(): void {
   draftSaveTimer = undefined
   if (createdTicketId.value || !draftReady.value || !draftSubjectId.value || !hasMeaningfulInput.value) return
@@ -450,6 +513,8 @@ async function preview(): Promise<void> {
   catch (error) { previewError.value = publicApiError(error, '案例预览暂不可用，请稍后重试。') }
   finally { previewing.value = false }
 }
+async function findKnowledge():Promise<void>{const request=++knowledgeGeneration;knowledgeLoading.value=true;knowledgeError.value='';try{const result=await knowledgeApi.list({q:form.value.title.trim(),pageSize:6});if(viewDisposed||request!==knowledgeGeneration)return;suggestedKnowledge.value=result.source==='api'?result.data.items.slice(0,6):[]}catch{if(!viewDisposed&&request===knowledgeGeneration)knowledgeError.value='知识暂不可用，可稍后重试。'}finally{if(!viewDisposed&&request===knowledgeGeneration)knowledgeLoading.value=false}}
+watch(()=>[form.value.title,form.value.catalogId],()=>{knowledgeGeneration++;suggestedKnowledge.value=[];if(knowledgeTimer)clearTimeout(knowledgeTimer);knowledgeTimer=setTimeout(()=>{void findKnowledge()},450)})
 async function submit(): Promise<void> {
   if (submitting.value || createdTicketId.value) return
   submitError.value = ''; submitNotice.value = ''
@@ -470,6 +535,7 @@ async function submit(): Promise<void> {
     draftStatus.value = ''
     if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = undefined }
     removeTicketDraft(draftSubjectId.value)
+    if(personalDraftId.value){try{await ticketDraftApi.delete(personalDraftId.value,personalDraftVersion.value);personalDraftId.value=''}catch{personalDraftNotice.value='工单已发起，原草稿暂未清理，请在草稿箱删除，勿重复发起。'}}
     const uploadsComplete = await uploadQueuedFiles(result.data)
     submitNotice.value = uploadsComplete ? '工单已创建，附件处理已完成。' : '工单已创建；部分附件或图片关联需要到原单核对。'
     if (uploadsComplete) await openCreatedTicket()
@@ -584,6 +650,7 @@ onMounted(async () => {
   await loadLaunchSources()
   if (viewDisposed) return
   launchSourcesInitialized = true
+  if(typeof route.query.draftId==='string'){await loadPersonalDraft(route.query.draftId);return}
   if (draftSubjectId.value) draftCandidate.value = readTicketDraft(draftSubjectId.value)
   draftReady.value = !draftCandidate.value
   const launch = parseServiceLaunch(route.query)
@@ -605,16 +672,21 @@ async function refreshServiceScope(): Promise<void> {
 watch(() => JSON.stringify([session.loading, session.currentUser?.iamUserId, session.currentUser?.organizationIamOrganizationId, session.source, session.authorization]), () => {
   if (!launchSourcesInitialized) return
   contextGeneration++; selectionGeneration++; formGeneration++; sourceGeneration++
+  if (savingPersonalDraft.value) { savingPersonalDraft.value = false; personalDraftUncertain.value = true }
   clearCatalogSelection(); items.value = []; serviceSystems.value = []; systemModules.value = []
   systemModulesLoading.value = false; systemMappingLoading.value = false; systemRegistryLoading.value = false; catalogLoading.value = false
   launchLoading.value = false; restoringDraft.value = false; pendingLaunch.value = null; launchError.value = ''
   draftReady.value = false; draftCandidate.value = null; scopeNeedsRefresh.value = true
+  suppressDraftTracking.value = false
+  if (hasMeaningfulInput.value) draftDirty.value = true
   if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = undefined }
   // A same-subject capability refresh invalidates all service projections synchronously.
   // Public free text is retained; a subject change is handled by the existing full reset below.
 }, { flush: 'sync' })
 onBeforeRouteUpdate(to => {
+  if(savingPersonalDraft.value && to.path===route.path && to.query.draftId===personalDraftId.value)return true
   if (formLocked.value) return false
+  if(to.query.draftId!==route.query.draftId){submitError.value='请先返回草稿箱，再打开另一份草稿。';return false}
   const launch = parseServiceLaunch(to.query)
   if (launch.kind === 'INVALID') { launchError.value = '新的服务入口无效，当前填写内容已保留。'; return false }
   if (launch.kind === 'VALID' && !matchesServiceSelection(launch.intent, form.value)) {
@@ -640,12 +712,14 @@ watch(draftSubjectId, (current, previous) => {
   } else if (!current) draftReady.value = false
 })
 function handleBeforeUnload(event: BeforeUnloadEvent): void {
+  if(savingPersonalDraft.value||personalDraftUncertain.value){event.preventDefault();return}
   if (allowNavigation.value || (!draftDirty.value && !pendingAttachments.value.length && !pendingInlineImages.value.length)) return
   event.preventDefault()
 }
 window.addEventListener('beforeunload', handleBeforeUnload)
 onBeforeUnmount(() => {
   viewDisposed = true
+  knowledgeGeneration++;if(knowledgeTimer)clearTimeout(knowledgeTimer)
   contextGeneration++; selectionGeneration++; formGeneration++; sourceGeneration++
   if (confirming.value) ElMessageBox.close()
   if (draftSaveTimer) clearTimeout(draftSaveTimer)
@@ -655,15 +729,17 @@ onBeforeUnmount(() => {
 })
 onBeforeRouteLeave(() => {
   // The body-mounted confirmation must be cancelled before leaving this editor.
-  if (confirming.value) return false
+  if (confirming.value || savingPersonalDraft.value) return false
+  if(personalDraftUncertain.value)return window.confirm('暂存结果尚未确认，请先重试暂存或到草稿箱核对。确定离开吗？')
   if (allowNavigation.value || (!draftDirty.value && !pendingAttachments.value.length && !pendingInlineImages.value.length)) return true
-  return window.confirm(createdTicketId.value ? '工单已创建。请先在原单核对附件，离开后本页待上传文件不会保留。确定离开吗？' : creationUncertain.value ? '本次创建结果尚未确认。离开后将无法复用本页提交信息，请先到工单中心核对再发起新单。确定离开吗？' : '当前工单尚未提交。服务选择和非敏感选项已暂存，但主题、正文和附件不会保存。确定离开吗？')
+  return window.confirm(createdTicketId.value ? '工单已创建。请先在原单核对附件，离开后本页待上传文件不会保留。确定离开吗？' : creationUncertain.value ? '本次创建结果尚未确认，请先到工单中心核对再发起新单。确定离开吗？' : '当前修改尚未暂存。可先点击“暂存”保存到草稿箱；直接离开将丢失未保存的正文和附件。确定离开吗？')
 })
 </script>
 
 <template>
   <section class="ticket-create-workspace">
-  <div class="page-heading ticket-create-heading"><div><h2>新建工单</h2><p>先选所属系统，再选工单服务；每项服务加载自己的已发布表单。</p><RouterLink to="/">← 返回系统服务目录</RouterLink></div><span class="status-pill">{{ createdTicketId ? '已创建' : '未提交' }}</span></div>
+  <div class="page-heading ticket-create-heading"><div><h2>流程发起 · {{ selectedTypeLabel }}</h2><p>选择系统与服务，填写申请信息后发起工单。</p><RouterLink to="/">← 返回服务目录</RouterLink></div><RouterLink to="/ticket-drafts">草稿箱</RouterLink></div>
+  <p v-if="personalDraftNotice" class="form-alert form-alert--success" role="status">{{personalDraftNotice}}</p>
   <p v-if="scopeNeedsRefresh" class="form-alert" role="alert">身份或权限范围已刷新，旧服务信息已清除。请重新核对后再填写业务字段。<button class="button button--secondary" type="button" :disabled="session.loading || systemRegistryLoading || !session.currentUser" @click="refreshServiceScope">{{ systemRegistryLoading ? '重新核对中…' : '重新核对服务范围' }}</button></p>
   <section v-if="pendingLaunch" class="draft-restore-banner" role="status"><div><b>已选择一个系统服务入口</b><span>{{ pendingLaunch.systemCode }} → {{ pendingLaunch.catalogId }}。{{ draftCandidate ? '发现旧草稿：可恢复上次选项，或按当前入口重新开始，两者不会混合。' : '点击后将重新核对系统、模块、服务映射与已发布表单。' }}</span></div><button type="button" class="button button--primary" :disabled="formLocked || systemRegistryLoading" @click="applyLaunchIntent">{{ launchLoading ? '核对服务入口…' : '按当前入口新建' }}</button><button type="button" class="button button--secondary" :disabled="formLocked" @click="pendingLaunch = null; launchError = ''">忽略此入口</button></section>
   <p v-if="launchError" class="form-alert form-alert--error" role="alert">{{ launchError }}</p>
@@ -680,11 +756,11 @@ onBeforeRouteLeave(() => {
         <el-tabs v-model="activeTab" class="ticket-create-tabs field--full">
       <el-tab-pane label="基础信息" name="basic">
         <section class="ticket-form-section">
-          <header class="form-section-heading"><span>申请人信息</span><small>IAM 同步，只读展示；提交后保存身份快照</small></header>
+          <header class="form-section-heading"><span>申请人信息</span><small>由当前账号自动带入</small></header>
           <div class="form-grid form-grid--three identity-form-grid">
-            <el-form-item class="field identity-display-field" required><template #label>申请人</template><div class="readonly-field">{{ session.currentUser?.displayName ?? '正在读取 IAM 身份…' }}</div></el-form-item>
-            <el-form-item class="field identity-display-field" required><template #label>申请人部门</template><div class="readonly-field">{{ session.currentUser?.organizationName ?? '正在读取 IAM 组织…' }}</div></el-form-item>
-            <el-form-item class="field identity-display-field"><template #label>IAM 用户 ID</template><div class="readonly-field mono-text">{{ session.currentUser?.iamUserId ?? '—' }}</div></el-form-item>
+            <el-form-item class="field identity-display-field" required><template #label>申请人</template><div class="readonly-field">{{ session.currentUser?.displayName ?? '正在读取账号信息…' }}</div></el-form-item>
+            <el-form-item class="field identity-display-field" required><template #label>申请人部门</template><div class="readonly-field">{{ session.currentUser?.organizationName ?? '正在读取部门信息…' }}</div></el-form-item>
+            <el-form-item class="field identity-display-field"><template #label>账号标识</template><div class="readonly-field mono-text">{{ session.currentUser?.iamUserId ?? '—' }}</div></el-form-item>
           </div>
         </section>
         <section class="ticket-form-section">
@@ -735,7 +811,7 @@ onBeforeRouteLeave(() => {
         <h3>工单概况</h3>
         <dl class="ticket-create-facts"><div><dt>工单状态</dt><dd>未提交</dd></div><div><dt>工单类型</dt><dd>{{ form.type === 'ACCESS_REQUEST' ? '账号权限' : form.type === 'SERVICE_REQUEST' ? '服务请求' : '故障报修' }}</dd></div><div><dt>影响系统</dt><dd>{{ selectedSystem?.systemName ?? '待选择' }}</dd></div><div><dt>当前处理人</dt><dd>提交后分派</dd></div><div><dt>创建时间</dt><dd>提交后记录</dd></div><div><dt>表单版本</dt><dd>{{ loadedForm ? `v${loadedForm.formVersion}` : '选择服务后加载' }}</dd></div></dl>
       </section>
-      <section class="panel form-panel knowledge-reference-panel"><div class="panel-header"><div><h3>知识库</h3><p>按目录、标签、字段与描述匹配，仅作参考。</p></div><RouterLink to="/knowledge">查看更多</RouterLink></div><button class="button button--secondary" type="button" :disabled="previewing || !loadedForm" @click="preview">{{ previewing ? '匹配中…' : '匹配案例与知识' }}</button><p v-if="previewError" class="form-alert form-alert--error">{{ previewError }}</p><div v-else-if="matchedRules.length" class="case-preview-list"><article v-for="item in matchedRules" :key="item.ruleCode"><b>{{ item.suggestion.title }}</b><span>{{ item.suggestion.kind === 'KNOWLEDGE_ARTICLE' ? '知识建议' : '已解决案例' }}</span><small>{{ item.suggestion.summary }}</small></article></div><p v-else class="rule-hint__empty">填写事件信息后可匹配已解决案例；不使用 AI，不自动改变工单流程。</p></section>
+      <section class="panel form-panel knowledge-reference-panel"><div class="panel-header"><div><h3>知识库</h3><p>根据主题查找解决方案</p></div><RouterLink to="/knowledge" target="_blank">查看更多</RouterLink></div><p v-if="knowledgeLoading" role="status">正在检索…</p><p v-else-if="knowledgeError" role="status">{{knowledgeError}} <button type="button" @click="findKnowledge">重试</button></p><ul v-else-if="suggestedKnowledge.length" class="create-knowledge-list"><li v-for="entry in suggestedKnowledge" :key="entry.id"><RouterLink :to="`/knowledge/${encodeURIComponent(entry.id)}`" target="_blank">{{entry.title}}</RouterLink></li></ul><p v-else class="rule-hint__empty">输入主题后自动查找相关知识。</p><details v-if="loadedForm"><summary>相关案例</summary><button class="button button--secondary" type="button" :disabled="previewing" @click="preview">{{previewing?'匹配中…':'查找相关案例'}}</button><p v-if="previewError" class="form-alert form-alert--error">{{previewError}}</p><div v-for="item in matchedRules" :key="item.ruleCode" class="case-preview-list"><b>{{item.suggestion.title}}</b><p>{{item.suggestion.summary}}</p></div></details></section>
       <section class="panel form-panel related-process-panel"><div class="panel-header"><div><h3>相关流程</h3><p>由已发布服务目录决定。</p></div></div><div class="related-process-item"><b>{{ selectedItem?.name ?? '尚未选择服务目录' }}</b><small>提交后创建 Flowable 流程实例；当前不展示或预创建审批任务。</small></div></section>
       <section class="panel form-panel tag-panel" :class="{ 'is-invalid': fieldError('tags') }" data-validation-field="tags"><div class="panel-header"><div><h3>{{ tagField?.label ?? '问题标签' }} <b v-if="tagField?.required">*</b></h3><p>{{ tagField?.helpText ?? '标准选项优先；是否允许自定义由表单版本决定。' }}</p></div></div><div class="tag-choice"><button v-for="tag in suggestedTags" :key="tag" class="tag-choice__item" :class="{ 'is-selected': form.tags.includes(tag) }" type="button" :disabled="!loadedForm?.tagPolicy.allowStandardTags" @click="toggleTag(tag)">{{ tag }}</button></div><p v-if="!loadedForm" class="rule-hint__empty">选择服务目录后显示可用标签。</p><div v-if="loadedForm?.tagPolicy.allowFreeTags" class="tag-adder"><input v-model="customTag" maxlength="50" placeholder="#自定义标签" @keyup.enter.prevent="addTag" /><button class="button button--secondary" type="button" @click="addTag">添加</button></div><small v-if="fieldError('tags')" class="form-field-error">{{ fieldError('tags') }}</small><div v-if="form.tags.length" class="tag-row selected-tags"><span v-for="tag in form.tags" :key="tag" class="tag tag--blue">{{ tag }} <button type="button" :aria-label="`移除 ${tag}`" @click="toggleTag(tag)">×</button></span></div></section>
     </aside>
@@ -752,7 +828,9 @@ onBeforeRouteLeave(() => {
       <button v-if="createdTicketId" class="button button--primary" type="button" :disabled="submitting" @click="openCreatedTicket">打开已创建工单</button>
       <template v-else>
         <RouterLink v-if="!submitting" class="button button--secondary" to="/tickets">{{ creationUncertain ? '先到工单中心核对' : '取消' }}</RouterLink>
-        <button class="button button--primary" type="button" :disabled="confirming || submitting || session.loading || catalogLoading || formLoading || systemRegistryLoading || systemMappingLoading || (!creationUncertain && formLocked)" @click="requestSubmit">{{ submitting ? '正在安全提交…' : creationUncertain ? '重试原提交' : '提交工单' }}</button>
+        <button v-if="personalDraftConflict" class="button button--secondary" type="button" :disabled="savingPersonalDraft || submitting || scopeNeedsRefresh" @click="savePersonalDraftCopy">另存为新草稿</button>
+        <button class="button button--secondary" type="button" :disabled="savingPersonalDraft || submitting || confirming || creationUncertain || restoringDraft || session.loading" @click="savePersonalDraft">{{savingPersonalDraft?'暂存中…':personalDraftUncertain?'重试暂存':'暂存'}}</button>
+        <button class="button button--primary" type="button" :disabled="confirming || submitting || session.loading || catalogLoading || formLoading || systemRegistryLoading || systemMappingLoading || (!creationUncertain && formLocked)" @click="requestSubmit">{{ submitting ? '正在发起…' : creationUncertain ? '重试原提交' : '发起' }}</button>
       </template>
     </div>
   </div>
@@ -760,6 +838,7 @@ onBeforeRouteLeave(() => {
 </template>
 
 <style scoped>
+.create-knowledge-list{list-style:none;padding:0;margin:12px 0;display:grid;gap:12px;font-size:12px;line-height:1.6}.knowledge-reference-panel details{margin-top:15px;font-size:12px}.knowledge-reference-panel summary{cursor:pointer;color:#68849e;margin-bottom:10px}
 .submission-receipt { grid-column: 1 / -1; min-width: 0; }
 .submission-receipt h3, .submission-receipt p { overflow-wrap: anywhere; }
 .submission-upload-list { list-style: none; margin: 16px 0; padding: 0; }

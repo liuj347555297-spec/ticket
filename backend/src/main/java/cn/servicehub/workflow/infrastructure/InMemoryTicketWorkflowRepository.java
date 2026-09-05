@@ -40,6 +40,7 @@ public class InMemoryTicketWorkflowRepository implements TicketWorkflowRepositor
         tasks.put(initialTask.id(), initialTask);
     }
     @Override public Optional<WorkflowInstance> findInstance(String ticketId) { return Optional.ofNullable(instances.get(ticketId)); }
+    @Override public Optional<WorkflowInstance> findInstanceForUpdate(String ticketId) { return findInstance(ticketId); }
     @Override public boolean updateInstance(WorkflowInstance replacement, long expectedVersion) {
         AtomicBoolean updated = new AtomicBoolean(false);
         instances.computeIfPresent(replacement.ticketId(), (ignored, current) -> {

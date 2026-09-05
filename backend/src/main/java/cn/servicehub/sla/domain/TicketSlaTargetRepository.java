@@ -6,6 +6,7 @@ import java.util.List;
 public interface TicketSlaTargetRepository {
     Optional<TicketSlaTarget> findByTicketId(String ticketId);
     List<String> findBreachedTicketIds();
+    List<String> findDueTicketIds(java.time.Instant fromInclusive, java.time.Instant toExclusive);
     List<TicketSlaTarget> findOpenTargets(int limit);
     void save(TicketSlaTarget target, Long expectedVersion);
 }

@@ -14,7 +14,7 @@ class ProductionProfileGuardTest {
     void productionRejectsLocalDevelopmentProfile() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("mysql", "prod", "local-dev");
-        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), false));
+        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), false, false));
         assertThrows(IllegalStateException.class, guard::afterPropertiesSet);
     }
 
@@ -22,7 +22,7 @@ class ProductionProfileGuardTest {
     void productionRejectsDirectTestIdentities() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("mysql", "prod");
-        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), true));
+        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), true, false));
         assertThrows(IllegalStateException.class, guard::afterPropertiesSet);
     }
 
@@ -30,7 +30,7 @@ class ProductionProfileGuardTest {
     void hardenedProductionCombinationIsAccepted() {
         MockEnvironment environment = new MockEnvironment();
         environment.setActiveProfiles("mysql", "prod");
-        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), false));
+        var guard = new ProductionProfileGuard(environment, new SecurityProperties(List.of("https://portal.example"), false, false));
         assertDoesNotThrow(guard::afterPropertiesSet);
     }
 }

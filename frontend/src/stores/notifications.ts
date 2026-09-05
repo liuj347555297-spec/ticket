@@ -16,5 +16,6 @@ export const useNotificationStore = defineStore('notifications', {
     markLocallyRead(): void {
       this.unreadCount = Math.max(0, this.unreadCount - 1)
     },
+    clear(): void { this.unreadCount = 0; this.source = null },
   },
 })

@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
 class TicketAccessScopeResolverTest {
-    private final TicketAccessScopeResolver resolver = new TicketAccessScopeResolver(new SecurityProperties(List.of(), true), new MockEnvironment());
+    private final TicketAccessScopeResolver resolver = new TicketAccessScopeResolver(new SecurityProperties(List.of(), true, false), new MockEnvironment());
 
     @Test
     void unionsSameTypeAndIntersectsDifferentTypes() {
@@ -44,7 +44,7 @@ class TicketAccessScopeResolverTest {
     @Test
     void productionProfileRejectsDirectTestIdentityEvenIfFlagIsSet() {
         MockEnvironment production = new MockEnvironment(); production.setActiveProfiles("prod");
-        TicketAccessScopeResolver productionResolver = new TicketAccessScopeResolver(new SecurityProperties(List.of(), true), production);
+        TicketAccessScopeResolver productionResolver = new TicketAccessScopeResolver(new SecurityProperties(List.of(), true, false), production);
         assertThrows(org.springframework.security.access.AccessDeniedException.class,
             () -> productionResolver.resolve(new CurrentUser("direct", Set.of("ROLE_PLATFORM_ADMIN"), "test")));
     }

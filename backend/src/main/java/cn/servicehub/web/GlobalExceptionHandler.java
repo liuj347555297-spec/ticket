@@ -14,10 +14,14 @@ import cn.servicehub.attachment.application.AttachmentNotFoundException;
 import cn.servicehub.attachment.application.AttachmentValidationException;
 import cn.servicehub.knowledge.application.KnowledgeNotFoundException;
 import cn.servicehub.knowledge.application.KnowledgeValidationException;
+import cn.servicehub.knowledge.application.KnowledgeDraftConflictException;
 import cn.servicehub.integration.application.IntegrationSecurityException;
 import cn.servicehub.announcement.application.AnnouncementValidationException;
 import cn.servicehub.servicesystem.application.ServiceSystemConflictException;
 import cn.servicehub.servicesystem.application.ServiceSystemValidationException;
+import cn.servicehub.localauth.application.LocalAccountConflictException;
+import cn.servicehub.localauth.application.LocalAccountNotFoundException;
+import cn.servicehub.localauth.application.LocalAuthenticationFailedException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import org.springframework.http.HttpStatus;
@@ -105,6 +109,21 @@ public class GlobalExceptionHandler {
             .body(error(HttpStatus.CONFLICT, "WORKFLOW_CONFLICT", "Workflow action conflicts with current state", request));
     }
 
+    @ExceptionHandler(LocalAccountConflictException.class)
+    ResponseEntity<ApiError> localAccountConflict(LocalAccountConflictException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error(HttpStatus.CONFLICT, "LOCAL_ACCOUNT_CONFLICT", "Local account changed; reload before retrying", request));
+    }
+
+    @ExceptionHandler(LocalAccountNotFoundException.class)
+    ResponseEntity<ApiError> localAccountNotFound(LocalAccountNotFoundException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error(HttpStatus.NOT_FOUND, "NOT_FOUND", "Resource was not found", request));
+    }
+
+    @ExceptionHandler(LocalAuthenticationFailedException.class)
+    ResponseEntity<ApiError> localAuthenticationFailed(LocalAuthenticationFailedException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_FAILED", "Invalid login name or password", request));
+    }
+
     @ExceptionHandler(WorkflowExecutionUnavailableException.class)
     ResponseEntity<ApiError> workflowExecutionUnavailable(WorkflowExecutionUnavailableException ignored, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
@@ -120,6 +139,12 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({AttachmentValidationException.class, KnowledgeValidationException.class, AnnouncementValidationException.class})
     ResponseEntity<ApiError> attachmentRejected(RuntimeException ignored, HttpServletRequest request) {
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, "CONTENT_REJECTED", "Content is not accepted", request));
+    }
+
+    @ExceptionHandler(KnowledgeDraftConflictException.class)
+    ResponseEntity<ApiError> knowledgeDraftConflict(KnowledgeDraftConflictException ignored, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(error(HttpStatus.CONFLICT, "KNOWLEDGE_DRAFT_CONFLICT", "Knowledge draft changed; reload before saving", request));
     }
 
     @ExceptionHandler(AccessDeniedException.class)

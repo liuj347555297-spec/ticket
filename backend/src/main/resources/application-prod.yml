@@ -28,6 +28,10 @@ flowable:
 server:
   shutdown: graceful
   forward-headers-strategy: framework
+  servlet:
+    session:
+      cookie:
+        secure: true
 
 servicehub:
   workflow:
@@ -51,6 +55,7 @@ servicehub:
     # Comma-separated HTTPS portal origins; absence deliberately aborts configuration binding.
     allowed-origins: ${SERVICEHUB_SECURITY_ALLOWED_ORIGINS}
     allow-direct-test-identities: false
+    dev-header-enabled: false
   ticket:
     pagination:
       # At least 32 UTF-8 bytes, generated independently for each environment and injected by the

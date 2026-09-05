@@ -43,6 +43,8 @@ services:
       SERVICEHUB_TICKET_CURSOR_SIGNING_KEY: ${SERVICEHUB_TEST_CURSOR_SIGNING_KEY:?Required, at least 32 bytes}
       SERVICEHUB_SUPPORT_QUEUE_HMAC_CURRENT_VERSION: v1
       SERVICEHUB_SUPPORT_QUEUE_HMAC_KEY_RING: ${SERVICEHUB_TEST_HMAC_KEY_RING:?Required, v1= plus at least 32 bytes}
+      SERVICEHUB_LOCAL_AUTH_ENABLED: "true"
+      SERVICEHUB_LOCAL_AUTH_LOCAL_DEV_PASSWORD: ${SERVICEHUB_TEST_LOCAL_ACCOUNT_PASSWORD:?Required, at least 12 characters}
     volumes:
       - servicehub_test_attachments:/var/lib/servicehub/attachments
       - servicehub_test_tmp:/var/lib/servicehub/tmp

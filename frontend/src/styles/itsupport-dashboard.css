@@ -1,0 +1,37 @@
+.portal-home-metrics {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.dashboard-metric-link {
+  color: inherit;
+  text-decoration: none;
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.dashboard-metric-link:hover {
+  border-color: #9ec2eb;
+  box-shadow: 0 5px 16px rgb(31 82 139 / 10%);
+  transform: translateY(-1px);
+}
+
+.dashboard-metric-link:focus-visible {
+  outline: 3px solid #2275c8;
+  outline-offset: 2px;
+}
+
+.metric-card__icon--purple { color: #884cc4; background: #f4ebff; }
+.metric-card__icon--teal { color: #07877f; background: #e5f8f5; }
+.text-purple { color: #884cc4 !important; }
+.text-teal { color: #07877f !important; }
+
+.portal-home-header__status strong { color: #536b84; font-weight: 500; }
+.knowledge-search-launch { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:31px; margin-top:8px; padding-left:10px; border:1px solid #dcdfe6; border-radius:4px; color:#8a98a8; font-size:11px; text-decoration:none; }.knowledge-search-launch b { align-self:stretch; display:grid; place-items:center; padding:0 13px; color:#fff; border-radius:0 3px 3px 0; background:#1769b8; font-size:11px; }
+
+@media (max-width: 1280px) {
+  .portal-home-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 650px) {
+  .portal-home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .portal-home-metrics .metric-card--workspace { min-height: 88px; }
+}

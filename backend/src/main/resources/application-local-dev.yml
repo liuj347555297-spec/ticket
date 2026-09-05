@@ -3,7 +3,11 @@
 # Attachment uploads still use all server-side file type, size, authorization and audit checks.
 # Only the unavailable enterprise antivirus integration is bypassed by the profile-scoped adapter.
 servicehub:
+  local-auth:
+    enabled: ${SERVICEHUB_LOCAL_AUTH_ENABLED:true}
+    local-dev-password: ${SERVICEHUB_LOCAL_AUTH_LOCAL_DEV_PASSWORD:LocalDev-Only!2026}
   security:
     allowed-origins:
       - http://localhost:1525
       - http://127.0.0.1:1525
+    dev-header-enabled: ${SERVICEHUB_DEV_HEADER_ENABLED:false}

@@ -17,7 +17,9 @@ public class InMemoryLifecycleApprovalPolicyRepository implements LifecycleAppro
     public InMemoryLifecycleApprovalPolicyRepository() {
         Instant now = Instant.parse("2026-01-01T00:00:00Z");
         for (var action : cn.servicehub.workflow.domain.WorkflowAction.values()) {
-            if (!java.util.Set.of("HOLD","ESCALATE","CANCEL","REOPEN","ASSIGN","ACCEPT","RESOLVE","CLOSE").contains(action.name())) continue;
+            // V48 retires blanket ACCEPT/RESOLVE/CLOSE fallbacks. Administrators may still
+            // publish explicitly scoped policies through the normal policy service.
+            if (!java.util.Set.of("HOLD","ESCALATE","CANCEL","REOPEN","ASSIGN").contains(action.name())) continue;
             policies.add(new LifecycleApprovalPolicy("builtin-" + action.name(), "默认生命周期审批", action, null, null,
                 java.util.Set.of("ROLE_SERVICE_MANAGER", "ROLE_PLATFORM_ADMIN"), "ANY_ONE", 100, 1440,
                 "DEFAULT-24H-V1", "AUDIT-ONLY-V1", "PUBLISHED", 1, now, now, now));

@@ -3,19 +3,21 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ticketApi, type Ticket, type TicketQueue, type TicketType } from '@/api/tickets'
 import { announcementApi, type ServiceAnnouncement } from '@/api/announcements'
 import { useSessionStore } from '@/stores/session'
+import { apiRequest } from '@/api/client'
 import ServiceSystemPortal from '@/components/ServiceSystemPortal.vue'
 import '@/styles/dashboard-interactions.css'
 import '@/styles/system-home-portal.css'
+import '@/styles/itsupport-dashboard.css'
 
 type DashboardState = 'LOADING' | 'READY' | 'EMPTY' | 'ERROR' | 'PARTIAL'
 type SectionState = 'IDLE' | 'LOADING' | 'READY' | 'ERROR'
-const queues = ['MY_TODO', 'OVERDUE', 'TODAY_COMPLETED', 'MY_DONE', 'MY_REQUESTED', 'DRAFTS', 'TO_READ'] as const satisfies readonly TicketQueue[]
+const queues = ['MY_TODO', 'OVERDUE', 'TODAY_DUE', 'TODAY_COMPLETED', 'MY_DONE', 'MY_REQUESTED', 'TO_READ'] as const satisfies readonly TicketQueue[]
 type DashboardQueue = typeof queues[number]
 type VisibleQueue = 'MY_TODO' | 'MY_REQUESTED'
 interface QueueSection { state: SectionState; total: number; items: Ticket[]; source: 'api' | 'demo' | null }
 function emptyQueues(): Record<DashboardQueue, QueueSection> {
   const empty = (): QueueSection => ({ state: 'IDLE', total: 0, items: [], source: null })
-  return { MY_TODO: empty(), OVERDUE: empty(), TODAY_COMPLETED: empty(), MY_DONE: empty(), MY_REQUESTED: empty(), DRAFTS: empty(), TO_READ: empty() }
+  return { MY_TODO: empty(), OVERDUE: empty(), TODAY_DUE: empty(), TODAY_COMPLETED: empty(), MY_DONE: empty(), MY_REQUESTED: empty(), TO_READ: empty() }
 }
 const session = useSessionStore()
 const queueSections = ref(emptyQueues())
@@ -26,16 +28,18 @@ const visibleQueues: Array<{ code: VisibleQueue; label: string }> = [{ code: 'MY
 const source = computed(() => queues.some((queue) => queueSections.value[queue].source === 'demo') ? 'demo' : null)
 const announcements = ref<ServiceAnnouncement[]>([])
 const announcementState = ref<SectionState>('IDLE')
+const draftState = ref<SectionState>('IDLE')
+const draftTotal = ref(0)
 const lastUpdatedAt = ref<Date | null>(null)
 const identityReady = computed(() => Boolean(session.currentUser) && !session.loading)
-const sectionStates = computed(() => [...queues.map((queue) => queueSections.value[queue].state), announcementState.value])
+const sectionStates = computed(() => [...queues.map((queue) => queueSections.value[queue].state), announcementState.value, draftState.value])
 const loading = computed(() => sectionStates.value.some((status) => status === 'LOADING' || status === 'IDLE'))
 const failedSections = computed(() => sectionStates.value.filter((status) => status === 'ERROR').length)
 const state = computed<DashboardState>(() => {
   if (loading.value) return 'LOADING'
   if (sectionStates.value.every((status) => status === 'ERROR')) return 'ERROR'
   if (failedSections.value) return 'PARTIAL'
-  return queues.every((queue) => queueSections.value[queue].total === 0) && announcements.value.length === 0 ? 'EMPTY' : 'READY'
+  return queues.every((queue) => queueSections.value[queue].total === 0) && draftTotal.value === 0 && announcements.value.length === 0 ? 'EMPTY' : 'READY'
 })
 const typeNames: Record<TicketType, string> = { INCIDENT: '故障报修', SERVICE_REQUEST: '服务请求', ACCESS_REQUEST: '账号权限', PROBLEM: '问题管理', CHANGE: '变更申请' }
 
@@ -45,10 +49,12 @@ function queuePending(queue: DashboardQueue): boolean { return ['IDLE', 'LOADING
 function queueCount(queue: DashboardQueue): number | string { return queueAvailable(queue) ? queueTotal(queue) : '—' }
 function queueUnavailableText(queue: DashboardQueue): string { return queuePending(queue) ? '正在加载' : '暂不可用' }
 const metrics = computed(() => [
-  { label: '待我处理', value: queueCount('MY_TODO'), note: queueAvailable('OVERDUE') ? `${queueTotal('OVERDUE')} 件已逾期` : `逾期统计${queueUnavailableText('OVERDUE')}`, available: queueAvailable('MY_TODO'), tone: 'blue', icon: '◷' },
-  { label: '我的待阅', value: queueCount('TO_READ'), note: queueAvailable('TO_READ') ? '消息关联工单' : `待阅统计${queueUnavailableText('TO_READ')}`, available: queueAvailable('TO_READ'), tone: 'orange', icon: '⊙' },
-  { label: '今日完成', value: queueCount('TODAY_COMPLETED'), note: queueAvailable('MY_DONE') ? `${queueTotal('MY_DONE')} 件累计已办` : `累计统计${queueUnavailableText('MY_DONE')}`, available: queueAvailable('TODAY_COMPLETED'), tone: 'green', icon: '✓' },
-  { label: '我发起的', value: queueCount('MY_REQUESTED'), note: queueAvailable('DRAFTS') ? `${queueTotal('DRAFTS')} 件草稿` : `草稿统计${queueUnavailableText('DRAFTS')}`, available: queueAvailable('MY_REQUESTED'), tone: 'red', icon: '!' },
+  { label: '我的待办', value: queueCount('MY_TODO'), note: '等待我处理的工单', available: queueAvailable('MY_TODO'), tone: 'blue', icon: '▣', to: '/tickets?queue=MY_TODO' },
+  { label: '逾期待办', value: queueCount('OVERDUE'), note: '已超过 SLA 目标', available: queueAvailable('OVERDUE'), tone: 'orange', icon: '!' , to: '/tickets?queue=OVERDUE' },
+  { label: '当日需完成', value: queueCount('TODAY_DUE'), note: '今日响应或解决到期', available: queueAvailable('TODAY_DUE'), tone: 'red', icon: '■', to: '/tickets?queue=TODAY_DUE' },
+  { label: '我的已办', value: queueCount('MY_DONE'), note: queueAvailable('TODAY_COMPLETED') ? `今日完成 ${queueTotal('TODAY_COMPLETED')} 件` : '包含历史已办', available: queueAvailable('MY_DONE'), tone: 'green', icon: '✓', to: '/tickets?queue=MY_DONE' },
+  { label: '我的创建', value: queueCount('MY_REQUESTED'), note: draftState.value === 'READY' ? `${draftTotal.value} 件个人草稿` : '草稿统计暂不可用', available: queueAvailable('MY_REQUESTED'), tone: 'purple', icon: '▤', to: '/tickets?queue=MY_REQUESTED' },
+  { label: '我的待阅', value: queueCount('TO_READ'), note: '未读工单消息', available: queueAvailable('TO_READ'), tone: 'teal', icon: '□', to: '/tickets?queue=TO_READ' },
 ])
 
 const notices = computed(() => [
@@ -69,12 +75,13 @@ const statePresentation = computed(() => {
 
 let requestGeneration = 0
 let disposed = false
-async function loadSections(selectedQueues: readonly DashboardQueue[], includeAnnouncements: boolean): Promise<void> {
+async function loadSections(selectedQueues: readonly DashboardQueue[], includeAnnouncements: boolean, includeDrafts = false): Promise<void> {
   const generation = requestGeneration
   const isCurrent = () => !disposed && generation === requestGeneration && identityReady.value
   if (!isCurrent()) return
   selectedQueues.forEach((queue) => { queueSections.value[queue].state = 'LOADING' })
   if (includeAnnouncements) announcementState.value = 'LOADING'
+  if (includeDrafts) draftState.value = 'LOADING'
   const requests = selectedQueues.map(async (queue) => {
     try {
       const result = await ticketApi.list({ queue, page: 1, pageSize: 6 })
@@ -96,12 +103,19 @@ async function loadSections(selectedQueues: readonly DashboardQueue[], includeAn
       if (isCurrent()) announcementState.value = 'ERROR'
     }
   })())
+  if (includeDrafts) requests.push((async () => {
+    try {
+      const page = await apiRequest<{ total: number }>('/ticket-drafts?page=1&pageSize=1')
+      if (!isCurrent()) return
+      draftTotal.value = page.total; draftState.value = 'READY'; lastUpdatedAt.value = new Date()
+    } catch { if (isCurrent()) draftState.value = 'ERROR' }
+  })())
   await Promise.all(requests)
 }
 function retryFailed(): void {
   // Set loading synchronously inside loadSections so rapid clicks cannot start another retry.
   if (loading.value || !identityReady.value) return
-  void loadSections(queues.filter((queue) => queueSections.value[queue].state === 'ERROR'), announcementState.value === 'ERROR')
+  void loadSections(queues.filter((queue) => queueSections.value[queue].state === 'ERROR'), announcementState.value === 'ERROR', draftState.value === 'ERROR')
 }
 function statusName(ticket: Ticket): string { return ({ SUBMITTED: '已提交', PENDING_CLASSIFICATION: '待分类', PENDING_ASSIGNMENT: '待分派', PENDING_ACCEPTANCE: '待受理', IN_PROGRESS: '处理中', PENDING_USER_FEEDBACK: '待用户反馈', RESOLVED: '已解决', CLOSED: '已关闭', CANCELLED: '已撤销', ON_HOLD: '已挂起', DRAFT: '草稿' })[ticket.status] }
 function announcementWindow(value: ServiceAnnouncement): string { return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit' }).format(new Date(value.effectiveUntil)) }
@@ -113,10 +127,12 @@ watch(() => JSON.stringify([session.loading, session.currentUser?.iamUserId, ses
   lastUpdatedAt.value = null
   activeQueue.value = 'MY_TODO'
   announcementState.value = 'IDLE'
-  if (identityReady.value) void loadSections(queues, true)
+  draftState.value = 'IDLE'; draftTotal.value = 0
+  if (identityReady.value) void loadSections(queues, true, true)
   else if (!session.loading) {
     queues.forEach((queue) => { queueSections.value[queue].state = 'ERROR' })
     announcementState.value = 'ERROR'
+    draftState.value = 'ERROR'
   }
 }, { immediate: true, flush: 'sync' })
 onBeforeUnmount(() => { disposed = true; requestGeneration += 1 })
@@ -125,22 +141,22 @@ onBeforeUnmount(() => { disposed = true; requestGeneration += 1 })
 <template>
   <section class="portal-home-header">
     <div>
-      <h2>服务工作台</h2>
-      <p>从业务系统发起工单，集中跟进您的服务事项。</p>
+      <h2>工作概览</h2>
+      <p>查看个人待办、已办、创建与待阅事项。</p>
     </div>
     <div class="portal-home-header__status" role="status" aria-live="polite">
       <strong>{{ statePresentation.title }}</strong>
-      <small>{{ statePresentation.detail }}</small>
+      <small v-if="state !== 'READY'">{{ statePresentation.detail }}</small>
       <small v-if="source === 'demo'">当前为本地演示数据，不代表实时运营状态。</small>
       <div v-if="failedSections && identityReady" class="dashboard-state__actions"><button type="button" :disabled="loading" @click="retryFailed">{{ loading ? '正在重试…' : '重试失败项' }}</button></div>
     </div>
   </section>
 
   <section class="metric-grid portal-home-metrics" aria-label="今日服务指标">
-    <article v-for="metric in metrics" :key="metric.label" class="metric-card metric-card--workspace" :class="{ 'metric-card--unavailable': !metric.available }">
+    <RouterLink v-for="metric in metrics" :key="metric.label" :to="metric.to" class="metric-card metric-card--workspace dashboard-metric-link" :class="{ 'metric-card--unavailable': !metric.available }">
       <span class="metric-card__icon" :class="`metric-card__icon--${metric.tone}`">{{ metric.icon }}</span>
       <div><span>{{ metric.label }}</span><strong>{{ metric.value }}</strong><small :class="`text-${metric.tone}`">{{ metric.note }}</small></div>
-    </article>
+    </RouterLink>
   </section>
 
   <p v-if="state === 'ERROR'" class="dashboard-status-message dashboard-status-message--error">{{ identityReady ? '工作台数据加载失败，未使用缓存数字或默认零值。' : '身份信息不可用，未读取工作台数据。请重新登录或刷新页面。' }}<button v-if="identityReady" type="button" :disabled="loading" @click="retryFailed">重试失败项</button></p>
@@ -152,7 +168,7 @@ onBeforeUnmount(() => { disposed = true; requestGeneration += 1 })
     <ServiceSystemPortal />
     <aside class="service-home-side">
       <section class="panel home-notice-panel" :aria-busy="announcementState === 'LOADING' || announcementState === 'IDLE'"><div class="panel-header"><div><h3>公告</h3><p>服务窗口与平台提醒</p></div><span>{{ announcementState === 'READY' ? `${announcements.length} 条` : announcementState === 'ERROR' ? '暂不可用' : '加载中…' }}</span></div><ul v-if="announcementState === 'READY' && announcements.length"><li v-for="item in announcements" :key="item.id"><b><i v-if="item.pinned">置顶</i>{{ item.title }}</b><small>{{ item.body }} · 有效至 {{ announcementWindow(item) }}</small></li></ul><p v-else class="home-data-note" role="status">{{ announcementState === 'READY' ? '当前阅读范围内暂无有效公告。' : announcementState === 'ERROR' ? '公告服务暂时不可用，请重试失败项。' : '正在读取当前可见的公告…' }}</p></section>
-      <section class="panel home-knowledge-panel"><div class="panel-header"><div><h3>知识检索入口</h3><p>进入知识库后按当前权限返回结果</p></div><RouterLink to="/knowledge">进入知识库 →</RouterLink></div><p class="home-data-note">可尝试搜索“页面加载缓慢”“账号权限申请”或“VPN 连接失败”。</p></section>
+      <section class="panel home-knowledge-panel"><div class="panel-header"><div><h3>知识库</h3><p>搜索已发布解决方案</p></div><RouterLink to="/knowledge">查看更多 →</RouterLink></div><RouterLink class="knowledge-search-launch" to="/knowledge"><span>按关键词搜索知识</span><b>搜索</b></RouterLink></section>
     </aside>
   </section>
 
@@ -172,7 +188,6 @@ onBeforeUnmount(() => { disposed = true; requestGeneration += 1 })
 
     <aside class="workspace-side">
       <section class="panel attention-panel"><div class="panel-header"><div><h3>服务提醒</h3><p>需要优先关注</p></div><RouterLink to="/notifications">全部</RouterLink></div><ul class="attention-list"><li v-for="notice in notices" :key="notice.title"><span :class="`attention-list__type attention-list__type--${notice.tone}`">{{ notice.type }}</span><div><b>{{ notice.title }}</b><small>{{ notice.note }}</small></div></li></ul></section>
-      <section class="panel dashboard-data-note"><b>数据呈现说明</b><small>工作台仅展示服务端按当前身份返回的数据。菜单隐藏是呈现优化，不代表授权判断；访问具体对象时仍由服务端校验。</small><RouterLink to="/operations">查看运行治理 →</RouterLink></section>
     </aside>
   </div>
 </template>

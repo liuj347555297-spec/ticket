@@ -23,6 +23,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 @Configuration
 @EnableConfigurationProperties({SecurityProperties.class, IamSsoProperties.class,
+    cn.servicehub.localauth.LocalAuthProperties.class,
     cn.servicehub.ticket.application.TicketPaginationProperties.class,
     cn.servicehub.workflow.team.SupportQueueIdempotencyProperties.class})
 public class SecurityConfiguration {
@@ -75,6 +76,8 @@ public class SecurityConfiguration {
             .logout(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(HttpMethod.POST, "/api/v1/integrations/alerts/**").permitAll()
+                .requestMatchers(HttpMethod.GET, "/api/v1/csrf").permitAll()
+                .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                 .requestMatchers("/oauth2/**", "/login/**").permitAll()
                 .requestMatchers("/actuator/**").hasRole("ACTUATOR_VIEW")
                 .anyRequest().authenticated())
@@ -98,12 +101,19 @@ public class SecurityConfiguration {
         configuration.setAllowedOrigins(properties.allowedOrigins());
         configuration.setAllowedMethods(List.of(HttpMethod.GET.name(), HttpMethod.POST.name(), HttpMethod.PUT.name(),
             HttpMethod.PATCH.name(), HttpMethod.DELETE.name(), HttpMethod.OPTIONS.name()));
-        configuration.setAllowedHeaders(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id", "Idempotency-Key", "If-Match", "X-ServiceHub-Dev-Identity"));
+        var allowedHeaders = new java.util.ArrayList<>(List.of("Content-Type", "X-CSRF-TOKEN", "X-Request-Id", "Idempotency-Key", "If-Match"));
+        if (properties.devHeaderEnabled()) allowedHeaders.add("X-ServiceHub-Dev-Identity");
+        configuration.setAllowedHeaders(allowedHeaders);
         configuration.setExposedHeaders(List.of("X-Request-Id"));
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
+    }
+
+    @Bean
+    org.springframework.security.crypto.password.PasswordEncoder passwordEncoder() {
+        return new cn.servicehub.security.LocalAccountPasswordEncoder();
     }
 }
